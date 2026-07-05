@@ -1,0 +1,17 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+outputs/
+experiments/
+checkpoints/
+work/
+
+*.log
+*.tmp
+*.jsonl
+
+# Keep the local competition data out of source control by default.
+data/
