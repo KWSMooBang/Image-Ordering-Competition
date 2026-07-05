@@ -1,0 +1,4 @@
+# Extra packages for LoRA/QLoRA training on a CUDA GPU server.
+# Install after requirements.txt on the training machine.
+peft
+bitsandbytes

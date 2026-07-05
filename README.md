@@ -46,6 +46,105 @@ python -m src.baseline_qwen \
 
 Remove `--max-samples` for full test inference after the smoke test looks healthy.
 
+## Caption-Augmented Qwen Experiment
+
+This approach first generates one caption for each image, then asks a VLM to order the same
+four images with those captions attached as supporting notes. The default model is
+`Qwen/Qwen3-VL-8B-Instruct`, intended for a 24GB-class GPU such as an RTX 3090. It uses a
+moderate per-image pixel budget by default; lower `--max-pixels` first if the GPU runs out of
+memory.
+
+```bash
+python -m src.caption_augmented_qwen \
+  --data-dir data \
+  --output outputs/caption_augmented_qwen_submission.csv \
+  --max-samples 4
+```
+
+On CUDA, try FlashAttention if the server has it installed:
+
+```bash
+python -m src.caption_augmented_qwen \
+  --data-dir data \
+  --attn-implementation flash_attention_2 \
+  --output outputs/caption_augmented_qwen_qwen3vl8b_submission.csv \
+  --max-samples 4
+```
+
+If Qwen3-VL support is not available in the server's `transformers` install, upgrade
+`transformers` or fall back to `--model-name Qwen/Qwen2.5-VL-7B-Instruct`.
+
+Captions are cached in `outputs/caption_augmented_qwen_captions.jsonl`, so reruns can reuse them.
+Use `--refresh-captions` when changing the caption prompt or caption model.
+
+### Caption-Augmented Qwen Training
+
+The trainable version SFTs the same prompt with LoRA/QLoRA. Training targets are converted from
+the competition `Answer` inverse mapping back to chronological image labels before being used as
+assistant outputs.
+
+Local dry-run, with no model download:
+
+```bash
+python -m src.train_caption_augmented_qwen \
+  --data-dir data \
+  --output-dir outputs/caption_augmented_train_dry_run \
+  --max-samples 4 \
+  --max-steps 1 \
+  --dry-run
+```
+
+On a CUDA training server, install the extra GPU dependencies:
+
+```bash
+python -m pip install -r requirements-gpu.txt
+```
+
+Generate a small train-caption cache first:
+
+```bash
+python -m src.generate_captions_qwen \
+  --data-dir data \
+  --split train \
+  --caption-cache outputs/train_qwen3vl8b_captions.jsonl \
+  --max-samples 4 \
+  --attn-implementation flash_attention_2
+```
+
+Then run a 3090 training smoke test:
+
+```bash
+python -m src.train_caption_augmented_qwen \
+  --data-dir data \
+  --output-dir checkpoints/caption_augmented_qwen3vl8b_lora_smoke \
+  --caption-cache outputs/train_qwen3vl8b_captions.jsonl \
+  --missing-caption-policy fail \
+  --max-samples 4 \
+  --max-steps 1 \
+  --attn-implementation flash_attention_2
+```
+
+If the 24GB GPU runs out of memory, lower `--max-pixels` first, for example `--max-pixels 401408`.
+
+After training, generate test captions with the base VLM and run inference with the trained adapter:
+
+```bash
+python -m src.generate_captions_qwen \
+  --data-dir data \
+  --split test \
+  --caption-cache outputs/test_qwen3vl8b_captions.jsonl \
+  --attn-implementation flash_attention_2
+
+python -m src.caption_augmented_qwen \
+  --data-dir data \
+  --caption-cache outputs/test_qwen3vl8b_captions.jsonl \
+  --adapter-path checkpoints/caption_augmented_qwen3vl8b_lora_smoke \
+  --output outputs/caption_augmented_qwen3vl8b_lora_submission.csv \
+  --attn-implementation flash_attention_2
+```
+
+Add `--load-in-4bit` to adapter inference if full-precision loading is too tight.
+
 ## Train Validation
 
 Use train validation before moving an idea from local implementation to a training server.
@@ -88,6 +187,23 @@ experiments/              experiment notes
 checkpoints/              trained weights or adapters
 work/                     temporary files
 ```
+
+## Idea File Layout
+
+Keep each experiment as separate runnable modules under `src/`. Shared helpers should stay in
+small common modules instead of being imported from another experiment's CLI.
+
+Current layout:
+
+- `src/baseline_qwen.py`: original zero-shot Qwen baseline
+- `src/qwen_vl_common.py`: shared Qwen VL loading and generation helpers
+- `src/caption_augmented_common.py`: caption-augmented prompt and caption-cache helpers
+- `src/generate_captions_qwen.py`: caption-cache generation CLI
+- `src/caption_augmented_qwen.py`: caption-augmented inference/submission CLI
+- `src/train_caption_augmented_qwen.py`: caption-augmented LoRA/QLoRA training CLI
+
+For a new idea, prefer adding `src/<idea_name>.py` for inference, `src/train_<idea_name>.py`
+only if it trains, and `src/<idea_name>_common.py` only for code shared by that idea's CLIs.
 
 ## Baseline Logic
 

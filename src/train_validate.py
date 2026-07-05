@@ -52,6 +52,8 @@ OPTIONAL_PACKAGES = {
     "transformers": "transformers",
     "accelerate": "accelerate",
     "qwen-vl-utils": "qwen_vl_utils",
+    "peft": "peft",
+    "bitsandbytes": "bitsandbytes",
 }
 
 
