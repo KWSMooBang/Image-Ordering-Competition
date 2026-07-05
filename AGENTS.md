@@ -52,15 +52,18 @@ When implementing a requested approach:
 6. Run lightweight verification before reporting completion:
    - `python -m src.validate_data --data-dir data`
    - `python -m pytest`
-7. For model-heavy inference, run a smoke test with `--max-samples` before full inference.
-8. Write submissions to `outputs/`, not the repository root.
+7. Run a training preflight when the change adds trainable logic:
+   - local: `python -m src.train_validate --profile local --data-dir data`
+   - cloud GPU: `python -m src.train_validate --profile cloud-gpu --data-dir data`
+   - custom idea: pass `--train-command "python -m src.<idea_train> --data-dir data --output-dir outputs/<idea>_smoke --max-steps 1"`
+8. For model-heavy inference, run a smoke test with `--max-samples` before full inference.
+9. Write submissions, checkpoints, and reports under `outputs/`, `checkpoints/`, or `experiments/`, not the repository root.
 
 ## Directory Rules
 
 - `data/`: competition data; do not edit or commit regenerated data.
 - `src/`: reusable Python modules and CLIs.
 - `scripts/`: thin shell wrappers around Python modules.
-- `configs/`: experiment configuration notes or YAML files.
 - `outputs/`: generated submissions and raw predictions.
 - `checkpoints/`: model checkpoints or adapters.
 - `experiments/`: experiment notes and scratch outputs.
@@ -77,13 +80,17 @@ When implementing a requested approach:
 - Keep changes scoped to the requested experiment.
 - Avoid destructive commands and avoid modifying original data files.
 - Prefer deterministic settings for baselines unless the user asks for sampling or ensembling.
+- Training entry points should support a cheap dry run such as `--max-steps 1` or `--max-samples 16`.
+- Before sending code to a training server, run `src.train_validate` locally with the intended train command.
 
 ## Useful Commands
 
 ```bash
 bash init.sh
 python -m src.validate_data --data-dir data
-python -m src.identity_baseline --data-dir data --output outputs/identity_submission.csv
+python -m src.train_smoke --data-dir data --output-dir outputs/train_smoke
+python -m src.train_validate --profile local --data-dir data
+python -m src.train_validate --profile cloud-gpu --data-dir data --skip-train-command
 python -m src.baseline_qwen --data-dir data --output outputs/qwen2vl_submission.csv --max-samples 4
 python -m pytest
 ```

@@ -31,7 +31,7 @@ CSV schema:
 bash init.sh
 source .venv/bin/activate
 python -m src.validate_data --data-dir data
-python -m src.identity_baseline --data-dir data --output outputs/identity_submission.csv
+python -m src.train_validate --profile local --data-dir data
 python -m pytest
 ```
 
@@ -46,6 +46,33 @@ python -m src.baseline_qwen \
 
 Remove `--max-samples` for full test inference after the smoke test looks healthy.
 
+## Train Validation
+
+Use train validation before moving an idea from local implementation to a training server.
+
+Local validation:
+
+```bash
+python -m src.train_validate --profile local --data-dir data
+```
+
+Cloud GPU validation, to run on the target cloud instance:
+
+```bash
+python -m src.train_validate --profile cloud-gpu --data-dir data
+```
+
+For a custom idea trainer, expose a cheap dry-run mode and pass it as the train command:
+
+```bash
+python -m src.train_validate \
+  --profile cloud-gpu \
+  --data-dir data \
+  --train-command "python -m src.my_idea_train --data-dir data --output-dir outputs/my_idea_smoke --max-steps 1"
+```
+
+The default train command runs `src.train_smoke`, which opens real images, builds a tiny torch model, trains for a couple of steps, and writes a checkpoint. It is a resource and wiring check, not a meaningful baseline.
+
 ## Project Structure
 
 ```text
@@ -53,7 +80,6 @@ AGENTS.md                 agent instructions and competition contract
 init.sh                   environment setup and data sanity check
 requirements.txt          Python dependencies
 baseline_code.ipynb       original provided baseline notebook
-configs/                  experiment configs
 scripts/                  shell wrappers
 src/                      reusable implementation
 tests/                    lightweight tests
@@ -81,5 +107,6 @@ Useful checks:
 
 ```bash
 python -m src.validate_data --data-dir data
+python -m src.train_validate --profile local --data-dir data
 python -m pytest
 ```
