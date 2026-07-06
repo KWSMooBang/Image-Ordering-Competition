@@ -11,6 +11,7 @@ import pandas as pd
 
 from src.caption_augmented.config import DEFAULT_ORDER_MODEL
 from src.caption_augmented.dataset import OrderTrainingDataset, OrderTrainingRecord, build_training_records
+from src.caption_augmented.model import load_qwen_processor_and_model
 from src.caption_augmented.prompts import build_order_messages
 
 DEFAULT_OUTPUT_DIR = "outputs/caption_augmented/orderer_train_smoke"
@@ -18,7 +19,7 @@ DEFAULT_LORA_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,dow
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the caption-augmented Qwen3-VL orderer.")
+    parser = argparse.ArgumentParser(description="Train the caption-augmented Qwen3.5/Qwen3-VL orderer.")
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--caption-cache", default=None)
     parser.add_argument("--missing-caption-policy", choices=["empty", "fail"], default="empty")
@@ -130,15 +131,10 @@ def build_model_kwargs(args: argparse.Namespace, torch: Any) -> dict[str, Any]:
 def load_orderer_training_bundle(args: argparse.Namespace):
     try:
         import torch
-        from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
     except ImportError as exc:
         raise RuntimeError("Orderer training requires torch and a recent transformers build.") from exc
 
-    processor = AutoProcessor.from_pretrained(args.model_name)
-    model = Qwen3VLForConditionalGeneration.from_pretrained(
-        args.model_name,
-        **build_model_kwargs(args, torch),
-    )
+    processor, model = load_qwen_processor_and_model(args.model_name, build_model_kwargs(args, torch))
     return torch, processor, model
 
 

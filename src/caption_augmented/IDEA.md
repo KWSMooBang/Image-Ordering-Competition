@@ -19,14 +19,17 @@ Caption generator options:
 - Primary lightweight caption model: `Salesforce/blip-image-captioning-large`
   - Hugging Face: https://huggingface.co/Salesforce/blip-image-captioning-large
   - Role: generate one concise caption for each single image.
-- Alternative caption generator: a VLM such as `Qwen/Qwen3-VL-8B-Instruct`
+- Alternative caption generator: a VLM such as `Qwen/Qwen3.5-4B`
   - Role: generate richer captions when compute allows, possibly with sentence-aware prompts.
 
 Ordering VLM:
 
-- `Qwen/Qwen3-VL-8B-Instruct`
-  - Hugging Face: https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+- Primary 3090-friendly orderer: `Qwen/Qwen3.5-4B`
+  - Hugging Face: https://huggingface.co/Qwen/Qwen3.5-4B
   - Role: receive all four images and captions, then output the chronological image labels.
+- Stronger but tighter option: `Qwen/Qwen3.5-9B`
+  - Hugging Face: https://huggingface.co/Qwen/Qwen3.5-9B
+  - Role: same ordering task when GPU memory budget allows.
 
 ## Data Contract
 
@@ -66,7 +69,7 @@ src.submission.submission_to_chronological()
    - include all four original images,
    - include text blocks such as `Image 1 caption: ...`,
    - include the original `Sentence`,
-   - instruct Qwen3-VL to output only a Python list of chronological image labels.
+   - instruct Qwen3.5 to output only a Python list of chronological image labels.
 5. Parse model output.
 6. Convert chronological order to submission answer.
 7. Write `Id,Answer` CSV and raw JSONL logs.
@@ -127,10 +130,10 @@ src/caption_augmented/
   config.py          # implemented defaults and dataclasses
   captions.py        # implemented caption generation and cache IO
   prompts.py         # implemented caption and ordering prompt builders
-  model.py           # implemented BLIP captioner and Qwen3-VL ordering wrappers
+  model.py           # implemented BLIP captioner and Qwen3.5/Qwen3-VL ordering wrappers
   infer.py           # implemented submission-generation CLI
   dataset.py         # implemented train record and target construction
-  train.py           # implemented Qwen3-VL LoRA/QLoRA SFT CLI
+  train.py           # implemented Qwen3.5/Qwen3-VL LoRA/QLoRA SFT CLI
 
 tests/caption_augmented/
   test_captions.py   # implemented
@@ -186,19 +189,21 @@ python -m src.caption_augmented.train \
 
 ## Implementation Notes
 
-- Start with inference-only before adding training.
+- Start with cached BLIP captions plus `Qwen/Qwen3.5-4B` ordering on RTX 3090-class GPUs.
 - Keep BLIP caption generation separate from Qwen ordering logic.
 - Always log raw captions and raw ordering model outputs.
 - If parsing fails, use an explicit fallback and record the raw output.
 - Keep all generated artifacts under `outputs/caption_augmented/` or
   `checkpoints/caption_augmented/`.
 - Avoid importing code from other idea packages.
+- Qwen3.5 models use `transformers.AutoModelForMultimodalLM`; older Qwen3-VL models are kept as
+  an explicit compatibility path.
 
 ## Risks
 
 - Captions may omit subtle temporal details or hallucinate state changes.
 - If captions are too strong, Qwen may over-trust wrong text over visual evidence.
-- Four-image Qwen3-VL inference may be memory-heavy on a 24GB GPU depending on image token budget.
+- Four-image Qwen3.5 inference may be memory-heavy on a 24GB GPU depending on image token budget.
 - Caption generation doubles the pipeline cost unless cached.
 
 ## Evaluation Plan
