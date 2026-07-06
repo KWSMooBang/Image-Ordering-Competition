@@ -2,7 +2,10 @@
 
 This repository is a structured workspace for the SNU AI Challenge image ordering competition.
 
-The task is to order four image frames so they match a natural-language storyline. The baseline notebook, `baseline_code.ipynb`, uses `Qwen/Qwen2-VL-2B-Instruct` in a zero-shot prompt-only setting. This workspace keeps that baseline runnable from scripts and gives agents a stable place to add new approaches.
+The task is to order four image frames so they match a natural-language storyline. The baseline
+notebook, `baseline_code.ipynb`, uses `Qwen/Qwen2-VL-2B-Instruct` in a zero-shot prompt-only
+setting. This workspace keeps that baseline runnable and provides a clean harness layout for
+adding new experiment ideas.
 
 ## Data
 
@@ -30,8 +33,6 @@ CSV schema:
 ```bash
 bash init.sh
 source .venv/bin/activate
-python -m src.validate_data --data-dir data
-python -m src.train_validate --profile local --data-dir data
 python -m pytest
 ```
 
@@ -46,171 +47,117 @@ python -m src.baseline_qwen \
 
 Remove `--max-samples` for full test inference after the smoke test looks healthy.
 
-## Caption-Augmented Qwen Experiment
+## Architecture Decision
 
-This approach first generates one caption for each image, then asks a VLM to order the same
-four images with those captions attached as supporting notes. The default model is
-`Qwen/Qwen3-VL-8B-Instruct`, intended for a 24GB-class GPU such as an RTX 3090. It uses a
-moderate per-image pixel budget by default; lower `--max-pixels` first if the GPU runs out of
-memory.
+Use a hybrid architecture.
 
-```bash
-python -m src.caption_augmented_qwen \
-  --data-dir data \
-  --output outputs/caption_augmented_qwen_submission.csv \
-  --max-samples 4
-```
+Shared training/inference code is useful, but only for stable harness mechanics. A single generic
+training framework that tries to own every idea tends to become awkward quickly because each idea
+can differ in prompt format, model class, dataset/collator behavior, loss, decoding, caching, and
+postprocessing.
 
-On CUDA, try FlashAttention if the server has it installed:
+The preferred split is:
 
-```bash
-python -m src.caption_augmented_qwen \
-  --data-dir data \
-  --attn-implementation flash_attention_2 \
-  --output outputs/caption_augmented_qwen_qwen3vl8b_submission.csv \
-  --max-samples 4
-```
+- Put stable competition and execution mechanics in shared harness modules under `src/harness/`.
+- Put each experiment's model-specific logic in its own package under `src/<idea_name>/`.
+- Put each experiment's tests in `tests/<idea_name>/`.
+- Promote duplicated code into `src/harness/` only when at least two ideas actually need the same
+  behavior or when the code represents the competition contract.
 
-If Qwen3-VL support is not available in the server's `transformers` install, upgrade
-`transformers` or fall back to `--model-name Qwen/Qwen2.5-VL-7B-Instruct`.
-
-Captions are cached in `outputs/caption_augmented_qwen_captions.jsonl`, so reruns can reuse them.
-Use `--refresh-captions` when changing the caption prompt or caption model.
-
-### Caption-Augmented Qwen Training
-
-The trainable version SFTs the same prompt with LoRA/QLoRA. Training targets are converted from
-the competition `Answer` inverse mapping back to chronological image labels before being used as
-assistant outputs.
-
-Local dry-run, with no model download:
-
-```bash
-python -m src.train_caption_augmented_qwen \
-  --data-dir data \
-  --output-dir outputs/caption_augmented_train_dry_run \
-  --max-samples 4 \
-  --max-steps 1 \
-  --dry-run
-```
-
-On a CUDA training server, install the extra GPU dependencies:
-
-```bash
-python -m pip install -r requirements-gpu.txt
-```
-
-Generate a small train-caption cache first:
-
-```bash
-python -m src.generate_captions_qwen \
-  --data-dir data \
-  --split train \
-  --caption-cache outputs/train_qwen3vl8b_captions.jsonl \
-  --max-samples 4 \
-  --attn-implementation flash_attention_2
-```
-
-Then run a 3090 training smoke test:
-
-```bash
-python -m src.train_caption_augmented_qwen \
-  --data-dir data \
-  --output-dir checkpoints/caption_augmented_qwen3vl8b_lora_smoke \
-  --caption-cache outputs/train_qwen3vl8b_captions.jsonl \
-  --missing-caption-policy fail \
-  --max-samples 4 \
-  --max-steps 1 \
-  --attn-implementation flash_attention_2
-```
-
-If the 24GB GPU runs out of memory, lower `--max-pixels` first, for example `--max-pixels 401408`.
-
-After training, generate test captions with the base VLM and run inference with the trained adapter:
-
-```bash
-python -m src.generate_captions_qwen \
-  --data-dir data \
-  --split test \
-  --caption-cache outputs/test_qwen3vl8b_captions.jsonl \
-  --attn-implementation flash_attention_2
-
-python -m src.caption_augmented_qwen \
-  --data-dir data \
-  --caption-cache outputs/test_qwen3vl8b_captions.jsonl \
-  --adapter-path checkpoints/caption_augmented_qwen3vl8b_lora_smoke \
-  --output outputs/caption_augmented_qwen3vl8b_lora_submission.csv \
-  --attn-implementation flash_attention_2
-```
-
-Add `--load-in-4bit` to adapter inference if full-precision loading is too tight.
-
-## Train Validation
-
-Use train validation before moving an idea from local implementation to a training server.
-
-Local validation:
-
-```bash
-python -m src.train_validate --profile local --data-dir data
-```
-
-Cloud GPU validation, to run on the target cloud instance:
-
-```bash
-python -m src.train_validate --profile cloud-gpu --data-dir data
-```
-
-For a custom idea trainer, expose a cheap dry-run mode and pass it as the train command:
-
-```bash
-python -m src.train_validate \
-  --profile cloud-gpu \
-  --data-dir data \
-  --train-command "python -m src.my_idea_train --data-dir data --output-dir outputs/my_idea_smoke --max-steps 1"
-```
-
-The default train command runs `src.train_smoke`, which opens real images, builds a tiny torch model, trains for a couple of steps, and writes a checkpoint. It is a resource and wiring check, not a meaningful baseline.
-
-## Project Structure
+## Project Layout
 
 ```text
 AGENTS.md                 agent instructions and competition contract
-init.sh                   environment setup and data sanity check
+init.sh                   environment setup
 requirements.txt          Python dependencies
 baseline_code.ipynb       original provided baseline notebook
-scripts/                  shell wrappers
-src/                      reusable implementation and runnable CLIs
-src/validation/           runtime data and training preflight implementations
-tests/                    lightweight pytest tests
-outputs/                  generated submissions
-experiments/              experiment notes
+scripts/                  thin shell wrappers around Python modules
+src/
+  baseline_qwen.py        legacy/reference zero-shot baseline
+  data_utils.py           shared data loading/path helpers
+  submission.py           shared answer parsing and submission contract
+  harness/                shared training/inference/validation helpers, added as needed
+  <idea_name>/            one experiment idea package
+tests/
+  test_submission.py      shared submission-contract tests
+  harness/                tests for shared harness helpers, added as needed
+  <idea_name>/            tests for one experiment idea package
+outputs/                  generated submissions and raw predictions
+experiments/              experiment notes and scratch outputs
 checkpoints/              trained weights or adapters
-work/                     temporary files
+work/                     temporary analysis artifacts
 ```
 
-`src.validate_data` and `src.train_validate` are compatibility wrappers for executable validation
-commands. Their implementation lives under `src/validation/` so it is not confused with pytest
-test modules under `tests/`.
+The existing `src/baseline_qwen.py` may stay as a legacy baseline reference. New ideas should not
+add more root-level idea files.
 
-## Idea File Layout
+## Idea Package Contract
 
-Keep each experiment as separate runnable modules under `src/`. Shared helpers should stay in
-small common modules instead of being imported from another experiment's CLI.
+For a new idea named `caption_augmented`, prefer this shape:
 
-Current layout:
+```text
+src/caption_augmented/
+  __init__.py
+  infer.py                required for inference/submission generation
+  train.py                optional, only if the idea is trainable
+  prompts.py              optional idea-specific prompt builders
+  dataset.py              optional idea-specific dataset/collator code
+  model.py                optional idea-specific model loading/adapters
+  config.py               optional defaults and dataclasses
+tests/caption_augmented/
+  test_prompts.py
+  test_dataset.py
+  test_parsing.py
+```
 
-- `src/baseline_qwen.py`: original zero-shot Qwen baseline
-- `src/qwen_vl_common.py`: shared Qwen VL loading and generation helpers
-- `src/caption_augmented_common.py`: caption-augmented prompt and caption-cache helpers
-- `src/generate_captions_qwen.py`: caption-cache generation CLI
-- `src/caption_augmented_qwen.py`: caption-augmented inference/submission CLI
-- `src/train_caption_augmented_qwen.py`: caption-augmented LoRA/QLoRA training CLI
+Recommended entry points:
 
-For a new idea, prefer adding `src/<idea_name>.py` for inference, `src/train_<idea_name>.py`
-only if it trains, and `src/<idea_name>_common.py` only for code shared by that idea's CLIs.
+```bash
+python -m src.<idea_name>.infer \
+  --data-dir data \
+  --output outputs/<idea_name>/submission.csv \
+  --max-samples 4
 
-## Baseline Logic
+python -m src.<idea_name>.train \
+  --data-dir data \
+  --output-dir outputs/<idea_name>/train_smoke \
+  --max-samples 16 \
+  --max-steps 1
+```
+
+Trainable ideas must support a cheap smoke or dry run through `--max-steps 1`, `--max-samples`,
+or an explicit `--dry-run` flag.
+
+## Harness Sharing Policy
+
+Good candidates for `src/harness/`:
+
+- CSV loading and row/image-path iteration
+- train/test/sample submission contract checks
+- chronological-to-submission and submission-to-chronological conversion wrappers
+- generic submission writing and raw prediction logging
+- common CLI argument dataclasses or parser helpers
+- training preflight checks and smoke-run wrappers
+- deterministic seeding helpers
+- report/checkpoint/output path helpers
+
+Keep inside `src/<idea_name>/`:
+
+- model selection and model-specific loading
+- prompts, captioning strategy, retrieval strategy, ranking logic, or ensembling logic
+- datasets, collators, losses, LoRA target modules, and optimizer choices
+- output parsing that is unique to an idea
+- caches or preprocessing that only one idea uses
+
+Import rules:
+
+- `src/harness/` must not import from `src/<idea_name>/`.
+- `src/<idea_name>/` may import from `src/harness/`, `src.data_utils`, and `src.submission`.
+- One idea package must not import from another idea package.
+- If two ideas need the same helper, move the helper to `src/harness/` or another clearly shared
+  module.
+
+## Submission Logic
 
 The Qwen prompt asks the model to output chronological image labels, for example:
 
@@ -218,16 +165,23 @@ The Qwen prompt asks the model to output chronological image labels, for example
 [4, 2, 1, 3]
 ```
 
-The competition submission uses the inverse mapping: for each original input image, where it appears in chronological order. The helper `src.submission.chronological_to_submission()` performs this conversion.
+The competition submission uses the inverse mapping: for each original input image, where it
+appears in chronological order. The helper `src.submission.chronological_to_submission()` performs
+this conversion. Any model-facing chronological output should be converted before writing a
+submission CSV.
 
-## Agent Workflow
+## Testing
 
-When adding a new method, keep it runnable as a module under `src/`, add a thin wrapper in `scripts/` when useful, and validate the generated CSV before calling it done.
+Tests should be lightweight and should not require downloading large models.
 
-Useful checks:
+Good tests:
 
-```bash
-python -m src.validate_data --data-dir data
-python -m src.train_validate --profile local --data-dir data
-python -m pytest
-```
+- prompt/message shape
+- parsing and answer conversion
+- submission CSV validation
+- dataset row construction and image path resolution
+- cache lookup behavior
+- dry-run training record construction
+
+Avoid putting full model inference or long GPU training inside pytest. Use explicit smoke commands
+with `--max-samples` or `--max-steps` for those checks.

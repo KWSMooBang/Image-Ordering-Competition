@@ -15,3 +15,4 @@ work/
 
 # Keep the local competition data out of source control by default.
 data/
+models/
