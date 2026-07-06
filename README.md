@@ -180,13 +180,18 @@ init.sh                   environment setup and data sanity check
 requirements.txt          Python dependencies
 baseline_code.ipynb       original provided baseline notebook
 scripts/                  shell wrappers
-src/                      reusable implementation
-tests/                    lightweight tests
+src/                      reusable implementation and runnable CLIs
+src/validation/           runtime data and training preflight implementations
+tests/                    lightweight pytest tests
 outputs/                  generated submissions
 experiments/              experiment notes
 checkpoints/              trained weights or adapters
 work/                     temporary files
 ```
+
+`src.validate_data` and `src.train_validate` are compatibility wrappers for executable validation
+commands. Their implementation lives under `src/validation/` so it is not confused with pytest
+test modules under `tests/`.
 
 ## Idea File Layout
 
