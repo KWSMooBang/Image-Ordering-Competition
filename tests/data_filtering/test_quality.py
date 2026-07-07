@@ -117,6 +117,25 @@ def test_analyze_sample_uses_optional_caption_relevance(tmp_path):
     audit = analyze_sample(row, tmp_path, caption_cache=cache)
 
     assert audit.action == "downweight"
+    assert audit.relevance_backend == "caption_lexical"
+    assert audit.low_relevance_frames == [2]
+    assert "low_text_frame_relevance" in audit.reasons
+
+
+def test_analyze_sample_can_use_external_image_text_relevance_scorer(tmp_path):
+    row = make_row()
+    write_sample_images(tmp_path, row)
+
+    def scorer(row_values, image_paths):
+        assert row_values["Id"] == "sample-1"
+        assert len(image_paths) == 4
+        return [0.44, 0.03, 0.51, 0.27]
+
+    audit = analyze_sample(row, tmp_path, relevance_scorer=scorer, relevance_backend="siglip")
+
+    assert audit.action == "downweight"
+    assert audit.relevance_backend == "siglip"
+    assert audit.relevance_scores == [0.44, 0.03, 0.51, 0.27]
     assert audit.low_relevance_frames == [2]
     assert "low_text_frame_relevance" in audit.reasons
 

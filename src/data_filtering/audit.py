@@ -11,6 +11,7 @@ from src.data_filtering.quality import (
     filter_train_frame,
     load_caption_cache,
 )
+from src.data_filtering.siglip import DEFAULT_SIGLIP_MODEL, SiglipImageTextScorer
 from src.data_utils import read_csv
 
 DEFAULT_OUTPUT = "outputs/data_filtering/train_audit.csv"
@@ -22,10 +23,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument("--filtered-output", default=None)
     parser.add_argument("--caption-cache", default=None)
+    parser.add_argument(
+        "--relevance-backend",
+        choices=["auto", "none", "caption_lexical", "siglip"],
+        default="auto",
+        help="Frame-text relevance backend. auto uses caption lexical when --caption-cache is set.",
+    )
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--drop-actions", default="drop_from_supervised")
     parser.add_argument("--keep-no-ordering", dest="drop_no_ordering", action="store_false")
     parser.set_defaults(drop_no_ordering=True)
+
+    parser.add_argument("--siglip-model", default=DEFAULT_SIGLIP_MODEL)
+    parser.add_argument("--siglip-device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
+    parser.add_argument("--siglip-torch-dtype", choices=["auto", "float16", "bfloat16", "float32"], default="auto")
+    parser.add_argument("--siglip-batch-size", type=int, default=4)
 
     parser.add_argument("--dark-mean-max", type=float, default=DataFilteringConfig.dark_mean_max)
     parser.add_argument("--bright-mean-min", type=float, default=DataFilteringConfig.bright_mean_min)
@@ -70,6 +82,12 @@ def parse_drop_actions(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def resolve_relevance_backend(args: argparse.Namespace) -> str:
+    if args.relevance_backend != "auto":
+        return args.relevance_backend
+    return "caption_lexical" if args.caption_cache else "none"
+
+
 def main() -> int:
     args = parse_args()
     data_dir = Path(args.data_dir)
@@ -77,12 +95,28 @@ def main() -> int:
     if args.max_samples is not None:
         train_df = train_df.head(args.max_samples).copy()
 
-    caption_cache = load_caption_cache(args.caption_cache) if args.caption_cache else None
+    relevance_backend = resolve_relevance_backend(args)
+    caption_cache = None
+    relevance_scorer = None
+    if relevance_backend == "caption_lexical":
+        if not args.caption_cache:
+            raise ValueError("--caption-cache is required when --relevance-backend caption_lexical is used")
+        caption_cache = load_caption_cache(args.caption_cache)
+    elif relevance_backend == "siglip":
+        relevance_scorer = SiglipImageTextScorer(
+            model_name=args.siglip_model,
+            device=args.siglip_device,
+            torch_dtype=args.siglip_torch_dtype,
+            batch_size=args.siglip_batch_size,
+        )
+
     audit_df = build_audit_frame(
         train_df,
         data_dir / "train",
         config=config_from_args(args),
         caption_cache=caption_cache,
+        relevance_scorer=relevance_scorer,
+        relevance_backend=relevance_backend,
     )
 
     output_path = Path(args.output)

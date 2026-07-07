@@ -38,3 +38,18 @@ Rules are intentionally conservative:
 
 Caption relevance is optional and uses a caption cache with fields compatible with the
 caption-augmented JSONL format: `Id`, `image_index`, `image`, `caption`.
+
+SigLIP image-text relevance can be enabled without a caption cache:
+
+```bash
+python -m src.data_filtering.audit \
+  --data-dir data \
+  --output outputs/data_filtering/train_audit_siglip.csv \
+  --relevance-backend siglip \
+  --siglip-model google/siglip-so400m-patch14-384
+```
+
+SigLIP scores are sigmoid probabilities from the model's `logits_per_image` for each
+sentence-frame pair. Frames with scores at or below `--low-relevance-threshold` are marked as
+`low_text_frame_relevance`. Tune the threshold on a review subset before using it as a hard drop
+rule.

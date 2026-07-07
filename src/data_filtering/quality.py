@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 import json
@@ -16,6 +16,7 @@ from src.data_utils import INPUT_COLUMNS, image_paths_for_row
 from src.submission import PERMUTATION, parse_answer_cell
 
 CaptionCache = dict[tuple[str, int, str], str]
+FrameRelevanceScorer = Callable[[Mapping[str, Any], Sequence[Path]], Sequence[float | None]]
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9\uac00-\ud7a3]+")
 STOPWORDS = {
@@ -102,6 +103,9 @@ class SampleAudit:
     duplicate_pairs: list[str]
     low_relevance_frames: list[int]
     missing_caption_count: int
+    missing_relevance_count: int
+    relevance_backend: str
+    relevance_scores: list[float | None]
     caption_similarities: list[float | None]
     frame_audits: list[FrameAudit]
 
@@ -121,6 +125,9 @@ class SampleAudit:
             "low_relevance_frame_count": len(self.low_relevance_frames),
             "low_relevance_frames": _json_dumps(self.low_relevance_frames),
             "missing_caption_count": self.missing_caption_count,
+            "missing_relevance_count": self.missing_relevance_count,
+            "relevance_backend": self.relevance_backend,
+            "relevance_scores": _json_dumps([_round_optional(value) for value in self.relevance_scores]),
             "caption_similarities": _json_dumps([_round_optional(value) for value in self.caption_similarities]),
             "frame_blank_kinds": _json_dumps([frame.blank_kind for frame in self.frame_audits]),
             "frame_means": _json_dumps([_round_optional(frame.mean) for frame in self.frame_audits]),
@@ -220,19 +227,36 @@ def analyze_sample(
     *,
     config: DataFilteringConfig | None = None,
     caption_cache: CaptionCache | None = None,
+    relevance_scorer: FrameRelevanceScorer | None = None,
+    relevance_backend: str = "external",
 ) -> SampleAudit:
     cfg = config or DataFilteringConfig()
     row_values = _row_to_dict(row)
     row_id = str(row_values["Id"])
+    image_paths = image_paths_for_row(pd.Series(row_values), image_root)
     frame_audits = [
         analyze_frame(path, image_index=index, config=cfg)
-        for index, path in enumerate(image_paths_for_row(pd.Series(row_values), image_root), start=1)
+        for index, path in enumerate(image_paths, start=1)
     ]
     no_ordering = is_truthy(row_values.get("No_ordering"))
     answer_is_identity = _answer_is_identity(row_values.get("Answer"))
     blank_frames = [frame.image_index for frame in frame_audits if frame.is_blank]
     duplicate_pairs = _find_duplicate_pairs(frame_audits, cfg)
-    caption_similarities, low_relevance_frames, missing_caption_count = _caption_relevance(row_values, caption_cache, cfg)
+    (
+        effective_relevance_backend,
+        relevance_scores,
+        caption_similarities,
+        low_relevance_frames,
+        missing_caption_count,
+        missing_relevance_count,
+    ) = _frame_relevance(
+        row_values=row_values,
+        image_paths=image_paths,
+        caption_cache=caption_cache,
+        relevance_scorer=relevance_scorer,
+        relevance_backend=relevance_backend,
+        config=cfg,
+    )
     action, sample_weight, manual_review, reasons = _decide_action(
         frame_audits=frame_audits,
         no_ordering=no_ordering,
@@ -240,6 +264,7 @@ def analyze_sample(
         duplicate_pair_count=len(duplicate_pairs),
         low_relevance_frame_count=len(low_relevance_frames),
         missing_caption_count=missing_caption_count,
+        missing_relevance_count=missing_relevance_count,
         config=cfg,
     )
     if no_ordering and answer_is_identity:
@@ -257,6 +282,9 @@ def analyze_sample(
         duplicate_pairs=duplicate_pairs,
         low_relevance_frames=low_relevance_frames,
         missing_caption_count=missing_caption_count,
+        missing_relevance_count=missing_relevance_count,
+        relevance_backend=effective_relevance_backend,
+        relevance_scores=relevance_scores,
         caption_similarities=caption_similarities,
         frame_audits=frame_audits,
     )
@@ -268,9 +296,18 @@ def build_audit_frame(
     *,
     config: DataFilteringConfig | None = None,
     caption_cache: CaptionCache | None = None,
+    relevance_scorer: FrameRelevanceScorer | None = None,
+    relevance_backend: str = "external",
 ) -> pd.DataFrame:
     records = [
-        analyze_sample(row, image_root, config=config, caption_cache=caption_cache).to_record()
+        analyze_sample(
+            row,
+            image_root,
+            config=config,
+            caption_cache=caption_cache,
+            relevance_scorer=relevance_scorer,
+            relevance_backend=relevance_backend,
+        ).to_record()
         for _, row in train_df.iterrows()
     ]
     return pd.DataFrame(records)
@@ -368,17 +405,28 @@ def _hamming_distance(left: str, right: str) -> int:
     return (int(left, 16) ^ int(right, 16)).bit_count()
 
 
-def _caption_relevance(
+def _frame_relevance(
+    *,
     row_values: Mapping[str, Any],
+    image_paths: Sequence[Path],
     caption_cache: CaptionCache | None,
+    relevance_scorer: FrameRelevanceScorer | None,
+    relevance_backend: str,
     config: DataFilteringConfig,
-) -> tuple[list[float | None], list[int], int]:
+) -> tuple[str, list[float | None], list[float | None], list[int], int, int]:
+    if relevance_scorer is not None:
+        scores = list(relevance_scorer(row_values, image_paths))
+        if len(scores) != len(INPUT_COLUMNS):
+            raise ValueError(f"Expected {len(INPUT_COLUMNS)} relevance scores, got {len(scores)}")
+        low_relevance_frames = _low_relevance_frames(scores, config)
+        missing_relevance_count = sum(score is None for score in scores)
+        return relevance_backend, scores, [], low_relevance_frames, 0, missing_relevance_count
+
     if caption_cache is None:
-        return [], [], 0
+        return "none", [], [], [], 0, 0
 
     sentence = str(row_values.get("Sentence", ""))
     scores: list[float | None] = []
-    low_relevance_frames: list[int] = []
     missing_caption_count = 0
     for image_index, column in enumerate(INPUT_COLUMNS, start=1):
         image_name = str(row_values[column])
@@ -389,9 +437,16 @@ def _caption_relevance(
             continue
         score = lexical_similarity(sentence, caption)
         scores.append(score)
-        if score <= config.low_relevance_threshold:
-            low_relevance_frames.append(image_index)
-    return scores, low_relevance_frames, missing_caption_count
+    low_relevance_frames = _low_relevance_frames(scores, config)
+    return "caption_lexical", scores, scores, low_relevance_frames, missing_caption_count, missing_caption_count
+
+
+def _low_relevance_frames(scores: Sequence[float | None], config: DataFilteringConfig) -> list[int]:
+    return [
+        image_index
+        for image_index, score in enumerate(scores, start=1)
+        if score is not None and score <= config.low_relevance_threshold
+    ]
 
 
 def _decide_action(
@@ -402,6 +457,7 @@ def _decide_action(
     duplicate_pair_count: int,
     low_relevance_frame_count: int,
     missing_caption_count: int,
+    missing_relevance_count: int,
     config: DataFilteringConfig,
 ) -> tuple[str, float, bool, list[str]]:
     reasons: list[str] = []
@@ -439,6 +495,8 @@ def _decide_action(
 
     if missing_caption_count:
         reasons.append("missing_caption")
+    if missing_relevance_count and not missing_caption_count:
+        reasons.append("missing_relevance_score")
 
     if action == "downweight":
         return action, config.downweight_weight, manual_review, reasons
