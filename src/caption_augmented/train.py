@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 from pathlib import Path
@@ -35,7 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--logging-steps", type=int, default=1)
     parser.add_argument("--save-steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device-map", default="auto")
+    parser.add_argument(
+        "--device-map",
+        default="auto",
+        help="Model device_map. Use `local` for torchrun QLoRA, `none` for full/bf16 DDP, or a transformers device_map string.",
+    )
     parser.add_argument("--torch-dtype", choices=["auto", "float16", "bfloat16", "float32"], default="float16")
     parser.add_argument("--attn-implementation", choices=["eager", "sdpa", "flash_attention_2"], default=None)
     parser.add_argument("--load-in-4bit", dest="load_in_4bit", action="store_true", default=True)
@@ -65,7 +70,13 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def is_main_process() -> bool:
+    return int(os.environ.get("RANK", "0")) == 0
+
+
 def write_training_preview(records: list[OrderTrainingRecord], output_dir: Path, *, dry_run: bool) -> None:
+    if not is_main_process():
+        return
     output_dir.mkdir(parents=True, exist_ok=True)
     first = records[0]
     summary = {
@@ -85,6 +96,8 @@ def write_training_preview(records: list[OrderTrainingRecord], output_dir: Path,
 
 
 def write_training_config(args: argparse.Namespace, records: list[OrderTrainingRecord]) -> None:
+    if not is_main_process():
+        return
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     config = vars(args).copy()
@@ -107,9 +120,11 @@ def resolve_torch_dtype(torch: Any, dtype_name: str) -> Any:
 
 def build_model_kwargs(args: argparse.Namespace, torch: Any) -> dict[str, Any]:
     model_kwargs: dict[str, Any] = {
-        "device_map": args.device_map,
         "dtype": resolve_torch_dtype(torch, args.torch_dtype),
     }
+    device_map = resolve_device_map(args.device_map)
+    if device_map is not None:
+        model_kwargs["device_map"] = device_map
     if args.attn_implementation is not None:
         model_kwargs["attn_implementation"] = args.attn_implementation
 
@@ -127,6 +142,15 @@ def build_model_kwargs(args: argparse.Namespace, torch: Any) -> dict[str, Any]:
             bnb_4bit_use_double_quant=True,
         )
     return model_kwargs
+
+
+def resolve_device_map(value: str) -> str | dict[str, int] | None:
+    if value == "none":
+        return None
+    if value == "local":
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        return {"": local_rank}
+    return value
 
 
 def load_orderer_training_bundle(args: argparse.Namespace):
@@ -220,6 +244,7 @@ def build_training_arguments(args: argparse.Namespace, torch: Any):
     use_fp16 = cuda_available and args.torch_dtype == "float16"
     use_bf16 = cuda_available and args.torch_dtype == "bfloat16"
     save_strategy = "steps" if args.save_steps > 0 else "no"
+    ddp_find_unused_parameters = False if int(os.environ.get("WORLD_SIZE", "1")) > 1 else None
     return TrainingArguments(
         output_dir=args.output_dir,
         max_steps=args.max_steps,
@@ -237,6 +262,7 @@ def build_training_arguments(args: argparse.Namespace, torch: Any):
         dataloader_pin_memory=False,
         gradient_checkpointing=args.gradient_checkpointing,
         optim="adamw_torch",
+        ddp_find_unused_parameters=ddp_find_unused_parameters,
     )
 
 
@@ -286,11 +312,12 @@ def main() -> int:
         "use_lora": args.use_lora,
         "load_in_4bit": args.load_in_4bit,
     }
-    (output_dir / "orderer_training_summary.json").write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    if is_main_process():
+        (output_dir / "orderer_training_summary.json").write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0
 
 

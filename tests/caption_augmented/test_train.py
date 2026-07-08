@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from src.caption_augmented.dataset import OrderTrainingRecord
-from src.caption_augmented.train import OrdererSFTCollator, parse_lora_target_modules
+from src.caption_augmented.train import OrdererSFTCollator, is_main_process, parse_lora_target_modules, resolve_device_map
 
 
 class FakeBatch(dict):
@@ -39,6 +39,22 @@ def make_record() -> OrderTrainingRecord:
 
 def test_parse_lora_target_modules_trims_empty_values():
     assert parse_lora_target_modules("q_proj, k_proj,,v_proj ") == ["q_proj", "k_proj", "v_proj"]
+
+
+def test_resolve_device_map_supports_torchrun_local_rank(monkeypatch):
+    monkeypatch.setenv("LOCAL_RANK", "2")
+
+    assert resolve_device_map("local") == {"": 2}
+    assert resolve_device_map("none") is None
+    assert resolve_device_map("auto") == "auto"
+
+
+def test_is_main_process_uses_rank_env(monkeypatch):
+    monkeypatch.setenv("RANK", "1")
+    assert not is_main_process()
+
+    monkeypatch.setenv("RANK", "0")
+    assert is_main_process()
 
 
 def test_orderer_sft_collator_masks_prompt_tokens():
