@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 from PIL import Image
+from types import SimpleNamespace
 
 from src.data_filtering import (
     DataFilteringConfig,
@@ -11,6 +12,7 @@ from src.data_filtering import (
     build_audit_frame,
     filter_train_frame,
 )
+from src.data_filtering.siglip import _pooled_tensor
 
 
 def make_row(**overrides):
@@ -163,6 +165,12 @@ def test_analyze_sample_can_use_siglip_caption_embedding_scores(tmp_path):
     assert audit.caption_embedding_scores == [0.76, 0.03, 0.81, 0.62]
     assert audit.low_relevance_frames == [2]
     assert "low_text_frame_relevance" in audit.reasons
+
+
+def test_siglip_pooled_tensor_supports_transformers_output_object():
+    output = SimpleNamespace(pooler_output="pooled")
+
+    assert _pooled_tensor(output) == "pooled"
 
 
 def test_build_audit_frame_and_filter_train_frame_preserve_id_order(tmp_path):

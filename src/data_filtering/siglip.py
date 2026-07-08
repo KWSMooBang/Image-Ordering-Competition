@@ -132,7 +132,7 @@ class SiglipImageTextScorer:
         ).to(self.device)
         with self.torch.no_grad():
             features = self.model.get_text_features(**inputs)
-        return _normalize(features)
+        return _normalize(_pooled_tensor(features).float())
 
 
 def _combine_scores(
@@ -151,6 +151,19 @@ def _combine_scores(
 
 def _normalize(tensor):
     return tensor / tensor.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
+
+
+def _pooled_tensor(output):
+    if hasattr(output, "pooler_output") and output.pooler_output is not None:
+        return output.pooler_output
+    if hasattr(output, "text_embeds") and output.text_embeds is not None:
+        return output.text_embeds
+    if isinstance(output, tuple):
+        if len(output) > 1 and output[1] is not None:
+            return output[1]
+        if output:
+            return output[0]
+    return output
 
 
 def _resolve_device(torch, device: str) -> str:
