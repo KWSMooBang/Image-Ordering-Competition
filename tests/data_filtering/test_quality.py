@@ -5,11 +5,11 @@ from PIL import Image
 
 from src.data_filtering import (
     DataFilteringConfig,
+    FrameRelevanceScores,
     analyze_frame,
     analyze_sample,
     build_audit_frame,
     filter_train_frame,
-    lexical_similarity,
 )
 
 
@@ -104,7 +104,7 @@ def test_analyze_sample_drops_multiple_blank_frames(tmp_path):
     assert "multiple_blank_frames" in audit.reasons
 
 
-def test_analyze_sample_uses_optional_caption_relevance(tmp_path):
+def test_caption_cache_alone_does_not_enable_lexical_relevance_filtering(tmp_path):
     row = make_row()
     write_sample_images(tmp_path, row)
     cache = {
@@ -116,35 +116,53 @@ def test_analyze_sample_uses_optional_caption_relevance(tmp_path):
 
     audit = analyze_sample(row, tmp_path, caption_cache=cache)
 
-    assert audit.action == "downweight"
-    assert audit.relevance_backend == "caption_lexical"
-    assert audit.low_relevance_frames == [2]
-    assert "low_text_frame_relevance" in audit.reasons
+    assert audit.relevance_backend == "none"
+    assert audit.relevance_scores == []
+    assert audit.caption_embedding_scores == []
+    assert audit.low_relevance_frames == []
+    assert "low_text_frame_relevance" not in audit.reasons
 
 
-def test_analyze_sample_can_use_external_image_text_relevance_scorer(tmp_path):
+def test_analyze_sample_can_use_siglip_caption_embedding_scores(tmp_path):
     row = make_row()
     write_sample_images(tmp_path, row)
+    cache = {
+        ("sample-1", 1, "a.jpg"): "a person with a cup",
+        ("sample-1", 2, "b.jpg"): "a car parked on a street",
+        ("sample-1", 3, "c.jpg"): "a cup near a box",
+        ("sample-1", 4, "d.jpg"): "a person opens something",
+    }
 
-    def scorer(row_values, image_paths):
+    def scorer(row_values, image_paths, captions):
         assert row_values["Id"] == "sample-1"
         assert len(image_paths) == 4
-        return [0.44, 0.03, 0.51, 0.27]
+        assert captions == [
+            "a person with a cup",
+            "a car parked on a street",
+            "a cup near a box",
+            "a person opens something",
+        ]
+        return FrameRelevanceScores(
+            relevance_scores=[0.44, 0.03, 0.51, 0.27],
+            image_relevance_scores=[0.44, 0.92, 0.51, 0.27],
+            caption_embedding_scores=[0.76, 0.03, 0.81, 0.62],
+        )
 
-    audit = analyze_sample(row, tmp_path, relevance_scorer=scorer, relevance_backend="siglip")
+    audit = analyze_sample(
+        row,
+        tmp_path,
+        caption_cache=cache,
+        relevance_scorer=scorer,
+        relevance_backend="siglip",
+    )
 
     assert audit.action == "downweight"
     assert audit.relevance_backend == "siglip"
     assert audit.relevance_scores == [0.44, 0.03, 0.51, 0.27]
+    assert audit.image_relevance_scores == [0.44, 0.92, 0.51, 0.27]
+    assert audit.caption_embedding_scores == [0.76, 0.03, 0.81, 0.62]
     assert audit.low_relevance_frames == [2]
     assert "low_text_frame_relevance" in audit.reasons
-
-
-def test_lexical_similarity_scores_overlap_higher_than_unrelated_text():
-    related = lexical_similarity("A person opens a box and lifts a cup.", "person holding a cup")
-    unrelated = lexical_similarity("A person opens a box and lifts a cup.", "car on a street")
-
-    assert related > unrelated
 
 
 def test_build_audit_frame_and_filter_train_frame_preserve_id_order(tmp_path):

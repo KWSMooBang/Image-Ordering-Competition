@@ -4,9 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 import json
-import math
 from pathlib import Path
-import re
 from typing import Any
 
 import pandas as pd
@@ -16,32 +14,19 @@ from src.data_utils import INPUT_COLUMNS, image_paths_for_row
 from src.submission import PERMUTATION, parse_answer_cell
 
 CaptionCache = dict[tuple[str, int, str], str]
-FrameRelevanceScorer = Callable[[Mapping[str, Any], Sequence[Path]], Sequence[float | None]]
 
-TOKEN_RE = re.compile(r"[A-Za-z0-9\uac00-\ud7a3]+")
-STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "in",
-    "into",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "the",
-    "then",
-    "to",
-    "with",
-}
+
+@dataclass(frozen=True)
+class FrameRelevanceScores:
+    relevance_scores: list[float | None]
+    image_relevance_scores: list[float | None]
+    caption_embedding_scores: list[float | None]
+
+
+FrameRelevanceScorer = Callable[
+    [Mapping[str, Any], Sequence[Path], Sequence[str | None]],
+    FrameRelevanceScores | Sequence[float | None],
+]
 
 
 @dataclass(frozen=True)
@@ -56,7 +41,7 @@ class DataFilteringConfig:
     drop_no_ordering: bool = True
     downweight_blank_frame_count: int = 1
     drop_blank_frame_count: int = 2
-    low_relevance_threshold: float = 0.08
+    low_relevance_threshold: float = 0.05
     low_relevance_frame_count: int = 1
     clean_weight: float = 1.0
     downweight_weight: float = 0.5
@@ -106,7 +91,8 @@ class SampleAudit:
     missing_relevance_count: int
     relevance_backend: str
     relevance_scores: list[float | None]
-    caption_similarities: list[float | None]
+    image_relevance_scores: list[float | None]
+    caption_embedding_scores: list[float | None]
     frame_audits: list[FrameAudit]
 
     def to_record(self) -> dict[str, Any]:
@@ -128,7 +114,12 @@ class SampleAudit:
             "missing_relevance_count": self.missing_relevance_count,
             "relevance_backend": self.relevance_backend,
             "relevance_scores": _json_dumps([_round_optional(value) for value in self.relevance_scores]),
-            "caption_similarities": _json_dumps([_round_optional(value) for value in self.caption_similarities]),
+            "image_relevance_scores": _json_dumps(
+                [_round_optional(value) for value in self.image_relevance_scores]
+            ),
+            "caption_embedding_scores": _json_dumps(
+                [_round_optional(value) for value in self.caption_embedding_scores]
+            ),
             "frame_blank_kinds": _json_dumps([frame.blank_kind for frame in self.frame_audits]),
             "frame_means": _json_dumps([_round_optional(frame.mean) for frame in self.frame_audits]),
             "frame_stds": _json_dumps([_round_optional(frame.std) for frame in self.frame_audits]),
@@ -245,7 +236,8 @@ def analyze_sample(
     (
         effective_relevance_backend,
         relevance_scores,
-        caption_similarities,
+        image_relevance_scores,
+        caption_embedding_scores,
         low_relevance_frames,
         missing_caption_count,
         missing_relevance_count,
@@ -285,7 +277,8 @@ def analyze_sample(
         missing_relevance_count=missing_relevance_count,
         relevance_backend=effective_relevance_backend,
         relevance_scores=relevance_scores,
-        caption_similarities=caption_similarities,
+        image_relevance_scores=image_relevance_scores,
+        caption_embedding_scores=caption_embedding_scores,
         frame_audits=frame_audits,
     )
 
@@ -325,15 +318,6 @@ def filter_train_frame(
         raise ValueError("train_df and audit_df Id order must match")
     keep_mask = ~audit_df["action"].isin(set(drop_actions))
     return train_df.loc[keep_mask].copy()
-
-
-def lexical_similarity(left: str, right: str) -> float:
-    left_tokens = _token_set(left)
-    right_tokens = _token_set(right)
-    if not left_tokens or not right_tokens:
-        return 0.0
-    overlap = len(left_tokens & right_tokens)
-    return overlap / math.sqrt(len(left_tokens) * len(right_tokens))
 
 
 def _load_caption_cache_jsonl(path: Path) -> CaptionCache:
@@ -413,32 +397,61 @@ def _frame_relevance(
     relevance_scorer: FrameRelevanceScorer | None,
     relevance_backend: str,
     config: DataFilteringConfig,
-) -> tuple[str, list[float | None], list[float | None], list[int], int, int]:
+) -> tuple[str, list[float | None], list[float | None], list[float | None], list[int], int, int]:
     if relevance_scorer is not None:
-        scores = list(relevance_scorer(row_values, image_paths))
-        if len(scores) != len(INPUT_COLUMNS):
-            raise ValueError(f"Expected {len(INPUT_COLUMNS)} relevance scores, got {len(scores)}")
-        low_relevance_frames = _low_relevance_frames(scores, config)
-        missing_relevance_count = sum(score is None for score in scores)
-        return relevance_backend, scores, [], low_relevance_frames, 0, missing_relevance_count
+        captions, missing_caption_count = _captions_for_row(row_values, caption_cache)
+        scores = _normalize_relevance_scores(relevance_scorer(row_values, image_paths, captions))
+        _check_score_length(scores.relevance_scores, "relevance_scores")
+        _check_score_length(scores.image_relevance_scores, "image_relevance_scores")
+        _check_score_length(scores.caption_embedding_scores, "caption_embedding_scores")
+        low_relevance_frames = _low_relevance_frames(scores.relevance_scores, config)
+        missing_relevance_count = sum(score is None for score in scores.relevance_scores)
+        return (
+            relevance_backend,
+            scores.relevance_scores,
+            scores.image_relevance_scores,
+            scores.caption_embedding_scores,
+            low_relevance_frames,
+            missing_caption_count,
+            missing_relevance_count,
+        )
 
+    return "none", [], [], [], [], 0, 0
+
+def _captions_for_row(
+    row_values: Mapping[str, Any],
+    caption_cache: CaptionCache | None,
+) -> tuple[list[str | None], int]:
     if caption_cache is None:
-        return "none", [], [], [], 0, 0
+        return [None] * len(INPUT_COLUMNS), 0
 
-    sentence = str(row_values.get("Sentence", ""))
-    scores: list[float | None] = []
+    captions: list[str | None] = []
     missing_caption_count = 0
     for image_index, column in enumerate(INPUT_COLUMNS, start=1):
-        image_name = str(row_values[column])
-        caption = caption_cache.get((str(row_values["Id"]), image_index, image_name))
+        caption = None
+        if caption_cache is not None:
+            image_name = str(row_values[column])
+            caption = caption_cache.get((str(row_values["Id"]), image_index, image_name))
         if caption is None:
             missing_caption_count += 1
-            scores.append(None)
-            continue
-        score = lexical_similarity(sentence, caption)
-        scores.append(score)
-    low_relevance_frames = _low_relevance_frames(scores, config)
-    return "caption_lexical", scores, scores, low_relevance_frames, missing_caption_count, missing_caption_count
+        captions.append(caption)
+    return captions, missing_caption_count
+
+
+def _normalize_relevance_scores(result: FrameRelevanceScores | Sequence[float | None]) -> FrameRelevanceScores:
+    if isinstance(result, FrameRelevanceScores):
+        return result
+    scores = list(result)
+    return FrameRelevanceScores(
+        relevance_scores=scores,
+        image_relevance_scores=scores,
+        caption_embedding_scores=[],
+    )
+
+
+def _check_score_length(scores: Sequence[float | None], name: str) -> None:
+    if scores and len(scores) != len(INPUT_COLUMNS):
+        raise ValueError(f"Expected {len(INPUT_COLUMNS)} {name}, got {len(scores)}")
 
 
 def _low_relevance_frames(scores: Sequence[float | None], config: DataFilteringConfig) -> list[int]:
@@ -508,14 +521,6 @@ def _answer_is_identity(value: object) -> bool:
         return parse_answer_cell(value) == PERMUTATION
     except (SyntaxError, ValueError):
         return False
-
-
-def _token_set(text: str) -> set[str]:
-    return {
-        token
-        for token in (match.group(0).lower() for match in TOKEN_RE.finditer(str(text)))
-        if token not in STOPWORDS and len(token) > 1
-    }
 
 
 def _round_optional(value: float | None) -> float | None:

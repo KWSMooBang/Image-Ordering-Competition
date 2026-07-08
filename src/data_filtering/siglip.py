@@ -6,6 +6,8 @@ from typing import Any
 
 from PIL import Image
 
+from src.data_filtering.quality import FrameRelevanceScores
+
 DEFAULT_SIGLIP_MODEL = "google/siglip-so400m-patch14-384"
 
 
@@ -32,7 +34,14 @@ class SiglipImageTextScorer:
         self.torch = torch
         self.device = _resolve_device(torch, device)
         self.batch_size = batch_size
-        self.processor = AutoProcessor.from_pretrained(model_name)
+        try:
+            self.processor = AutoProcessor.from_pretrained(model_name)
+        except ImportError as exc:
+            raise RuntimeError(
+                "SigLIP processor loading failed because tokenizer dependencies are missing. "
+                "Install `sentencepiece` and `protobuf` in the runtime environment, then restart "
+                "the Python process."
+            ) from exc
         model_kwargs: dict[str, Any] = {}
         dtype = _resolve_torch_dtype(torch, torch_dtype, self.device)
         if dtype is not None:
@@ -40,20 +49,40 @@ class SiglipImageTextScorer:
         self.model = AutoModel.from_pretrained(model_name, **model_kwargs).to(self.device)
         self.model.eval()
 
-    def __call__(self, row: Mapping[str, Any], image_paths: Sequence[Path]) -> list[float | None]:
+    def __call__(
+        self,
+        row: Mapping[str, Any],
+        image_paths: Sequence[Path],
+        captions: Sequence[str | None],
+    ) -> FrameRelevanceScores:
         sentence = str(row.get("Sentence", ""))
-        scores: list[float | None] = [None] * len(image_paths)
-        valid_items = [(index, path) for index, path in enumerate(image_paths) if path.exists()]
-        if not sentence.strip() or not valid_items:
-            return scores
+        image_scores: list[float | None] = [None] * len(image_paths)
+        caption_scores: list[float | None] = []
+        if len(captions) != len(image_paths):
+            raise ValueError(f"Expected {len(image_paths)} captions, got {len(captions)}")
+        if not sentence.strip():
+            return FrameRelevanceScores(
+                relevance_scores=[None] * len(image_paths),
+                image_relevance_scores=image_scores,
+                caption_embedding_scores=caption_scores,
+            )
 
+        valid_items = [(index, path) for index, path in enumerate(image_paths) if path.exists()]
         for start in range(0, len(valid_items), self.batch_size):
             batch_items = valid_items[start : start + self.batch_size]
             batch_paths = [path for _, path in batch_items]
             batch_scores = self._score_batch(sentence, batch_paths)
             for (index, _), score in zip(batch_items, batch_scores, strict=True):
-                scores[index] = score
-        return scores
+                image_scores[index] = score
+
+        if any(caption and caption.strip() for caption in captions):
+            caption_scores = self._score_captions(sentence, captions)
+        relevance_scores = _combine_scores(image_scores, caption_scores)
+        return FrameRelevanceScores(
+            relevance_scores=relevance_scores,
+            image_relevance_scores=image_scores,
+            caption_embedding_scores=caption_scores,
+        )
 
     def _score_batch(self, sentence: str, image_paths: Sequence[Path]) -> list[float]:
         images = []
@@ -73,6 +102,55 @@ class SiglipImageTextScorer:
             outputs = self.model(**inputs)
             probabilities = self.torch.sigmoid(outputs.logits_per_image)
         return [float(value) for value in probabilities[:, 0].detach().cpu().tolist()]
+
+    def _score_captions(self, sentence: str, captions: Sequence[str | None]) -> list[float | None]:
+        scores: list[float | None] = [None] * len(captions)
+        valid_items = [
+            (index, str(caption).strip())
+            for index, caption in enumerate(captions)
+            if caption is not None and str(caption).strip()
+        ]
+        if not valid_items:
+            return scores
+
+        sentence_features = self._encode_texts([sentence])
+        for start in range(0, len(valid_items), self.batch_size):
+            batch_items = valid_items[start : start + self.batch_size]
+            batch_texts = [caption for _, caption in batch_items]
+            caption_features = self._encode_texts(batch_texts)
+            similarities = caption_features @ sentence_features.T
+            for (index, _), score in zip(batch_items, similarities[:, 0].detach().cpu().tolist(), strict=True):
+                scores[index] = float(score)
+        return scores
+
+    def _encode_texts(self, texts: Sequence[str]):
+        inputs = self.processor(
+            text=list(texts),
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        ).to(self.device)
+        with self.torch.no_grad():
+            features = self.model.get_text_features(**inputs)
+        return _normalize(features)
+
+
+def _combine_scores(
+    image_scores: Sequence[float | None],
+    caption_scores: Sequence[float | None],
+) -> list[float | None]:
+    combined: list[float | None] = []
+    for index, image_score in enumerate(image_scores):
+        candidates = [image_score]
+        if caption_scores:
+            candidates.append(caption_scores[index])
+        valid_scores = [score for score in candidates if score is not None]
+        combined.append(min(valid_scores) if valid_scores else None)
+    return combined
+
+
+def _normalize(tensor):
+    return tensor / tensor.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-12)
 
 
 def _resolve_device(torch, device: str) -> str:

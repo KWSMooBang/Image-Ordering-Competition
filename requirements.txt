@@ -8,3 +8,5 @@ torchvision
 transformers
 accelerate
 qwen-vl-utils
+sentencepiece
+protobuf

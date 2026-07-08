@@ -25,9 +25,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caption-cache", default=None)
     parser.add_argument(
         "--relevance-backend",
-        choices=["auto", "none", "caption_lexical", "siglip"],
+        choices=["auto", "none", "siglip"],
         default="auto",
-        help="Frame-text relevance backend. auto uses caption lexical when --caption-cache is set.",
+        help="Frame-text relevance backend. Use siglip to compare images and optional cached captions with the sentence.",
     )
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--drop-actions", default="drop_from_supervised")
@@ -85,7 +85,7 @@ def parse_drop_actions(value: str) -> list[str]:
 def resolve_relevance_backend(args: argparse.Namespace) -> str:
     if args.relevance_backend != "auto":
         return args.relevance_backend
-    return "caption_lexical" if args.caption_cache else "none"
+    return "none"
 
 
 def main() -> int:
@@ -98,11 +98,8 @@ def main() -> int:
     relevance_backend = resolve_relevance_backend(args)
     caption_cache = None
     relevance_scorer = None
-    if relevance_backend == "caption_lexical":
-        if not args.caption_cache:
-            raise ValueError("--caption-cache is required when --relevance-backend caption_lexical is used")
-        caption_cache = load_caption_cache(args.caption_cache)
-    elif relevance_backend == "siglip":
+    if relevance_backend == "siglip":
+        caption_cache = load_caption_cache(args.caption_cache) if args.caption_cache else None
         relevance_scorer = SiglipImageTextScorer(
             model_name=args.siglip_model,
             device=args.siglip_device,

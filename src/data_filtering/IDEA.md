@@ -33,11 +33,8 @@ Rules are intentionally conservative:
 - `No_ordering=True` defaults to `drop_from_supervised` because those rows use identity answers as
   placeholders.
 - two or more blank frames defaults to `drop_from_supervised`.
-- one blank frame, duplicate frame candidates, or optional low text-frame caption relevance defaults
+- one blank frame, duplicate frame candidates, or optional low SigLIP relevance defaults
   to `downweight` plus `manual_review`.
-
-Caption relevance is optional and uses a caption cache with fields compatible with the
-caption-augmented JSONL format: `Id`, `image_index`, `image`, `caption`.
 
 SigLIP image-text relevance can be enabled without a caption cache:
 
@@ -53,3 +50,19 @@ SigLIP scores are sigmoid probabilities from the model's `logits_per_image` for 
 sentence-frame pair. Frames with scores at or below `--low-relevance-threshold` are marked as
 `low_text_frame_relevance`. Tune the threshold on a review subset before using it as a hard drop
 rule.
+
+To also compare generated captions against the sentence, pass a caption cache with fields
+compatible with the caption-augmented JSONL format: `Id`, `image_index`, `image`, `caption`.
+The caption comparison uses SigLIP text embeddings, not lexical token overlap:
+
+```bash
+python -m src.data_filtering.audit \
+  --data-dir data \
+  --output outputs/data_filtering/train_audit_siglip_caption.csv \
+  --relevance-backend siglip \
+  --caption-cache outputs/caption_augmented/train_captions.jsonl
+```
+
+The manifest stores `image_relevance_scores`, `caption_embedding_scores`, and the combined
+`relevance_scores` used for filtering. When both image and caption scores exist for a frame, the
+combined score is the lower of the two.
