@@ -54,6 +54,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument("--lora-target-modules", default=DEFAULT_LORA_TARGET_MODULES)
     parser.add_argument("--drop-no-ordering", action="store_true")
+    parser.add_argument(
+        "--shuffle-augmentations-per-sample",
+        type=int,
+        default=0,
+        help="Create N shuffled image-order views per training row before building records. 0 disables this.",
+    )
+    parser.add_argument("--shuffle-seed", type=int, default=42)
+    parser.add_argument("--shuffle-include-identity", action="store_true")
+    parser.add_argument("--shuffle-no-ordering", action="store_true")
+    parser.add_argument("--shuffle-keep-original", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Build records and write config without loading a model")
     parser.add_argument("--resume-from-checkpoint", default=None)
     return parser.parse_args()
@@ -281,6 +291,11 @@ def main() -> int:
         max_samples=args.max_samples,
         drop_no_ordering=args.drop_no_ordering,
         train_csv_path=args.train_csv,
+        shuffle_augmentations_per_sample=args.shuffle_augmentations_per_sample,
+        shuffle_seed=args.shuffle_seed,
+        shuffle_include_identity=args.shuffle_include_identity,
+        shuffle_no_ordering=args.shuffle_no_ordering,
+        shuffle_keep_original=args.shuffle_keep_original,
     )
     write_training_preview(records, output_dir, dry_run=args.dry_run)
     write_training_config(args, records)

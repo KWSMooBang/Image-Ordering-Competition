@@ -1,0 +1,20 @@
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc_per_node=4 \
+  -m src.caption_augmented.train \
+  --data-dir data \
+  --train-csv outputs/data_filtering/train_filtered_siglip_caption.csv \
+  --caption-cache outputs/caption_augmented/train_captions.jsonl \
+  --output-dir checkpoints/caption_augmented/filtered_shuffle_a100x4_qwen_lora \
+  --max-steps -1 \
+  --num-train-epochs 1 \
+  --per-device-train-batch-size 1 \
+  --gradient-accumulation-steps 4 \
+  --learning-rate 2e-4 \
+  --save-steps 200 \
+  --logging-steps 10 \
+  --torch-dtype bfloat16 \
+  --attn-implementation sdpa \
+  --load-in-4bit \
+  --use-lora \
+  --device-map local \
+  --shuffle-augmentations-per-sample 2 \
+  --shuffle-keep-original

@@ -10,6 +10,7 @@ from src.caption_augmented.captions import (
     clean_caption,
     default_caption_cache_path,
     generate_captions_for_row,
+    get_cached_caption,
     load_caption_cache,
 )
 
@@ -56,6 +57,16 @@ def test_captions_for_row_can_fail_or_fill_empty_for_missing_values():
     with pytest.raises(ValueError, match="Missing cached captions"):
         captions_for_row(row, {}, missing_policy="fail")
     assert captions_for_row(row, {}, missing_policy="empty") == ["", "", "", ""]
+
+
+def test_captions_for_row_falls_back_to_id_and_image_name_after_slot_shuffle():
+    row = make_row()
+    shuffled = row.copy()
+    shuffled["Input_1"] = "c.jpg"
+    cache = {("sample-1", 3, "c.jpg"): "caption for c"}
+
+    assert get_cached_caption(cache, "sample-1", 1, "c.jpg") == "caption for c"
+    assert captions_for_row(shuffled, cache, missing_policy="empty")[0] == "caption for c"
 
 
 def test_generate_captions_for_row_uses_cache_and_appends_missing_records(tmp_path):

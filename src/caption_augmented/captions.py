@@ -61,6 +61,25 @@ def load_caption_cache(path: str | Path) -> CaptionCache:
     return cache
 
 
+def get_cached_caption(
+    cache: CaptionCache,
+    row_id: object,
+    image_index: int,
+    image_name: object,
+) -> str | None:
+    exact_key = caption_cache_key(row_id, image_index, image_name)
+    caption = cache.get(exact_key)
+    if caption is not None:
+        return caption
+
+    normalized_id = str(row_id)
+    normalized_image = str(image_name)
+    for cache_id, cache_image_index, cache_image in cache:
+        if cache_id == normalized_id and cache_image == normalized_image:
+            return cache[(cache_id, cache_image_index, cache_image)]
+    return None
+
+
 def append_caption_record(handle: TextIO, record: CaptionRecord) -> None:
     handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
     handle.flush()
@@ -76,8 +95,7 @@ def captions_for_row(
     missing: list[str] = []
     for image_index, column in enumerate(INPUT_COLUMNS, start=1):
         image_name = str(row[column])
-        key = caption_cache_key(row["Id"], image_index, image_name)
-        caption = cache.get(key)
+        caption = get_cached_caption(cache, row["Id"], image_index, image_name)
         if caption is None:
             missing.append(f"Id={row['Id']} image_index={image_index} image={image_name}")
             caption = ""
@@ -105,7 +123,7 @@ def generate_captions_for_row(
     for image_index, image_path in enumerate(image_paths, start=1):
         image_name = str(row[INPUT_COLUMNS[image_index - 1]])
         key = caption_cache_key(row["Id"], image_index, image_name)
-        caption = None if refresh else cache.get(key)
+        caption = None if refresh else get_cached_caption(cache, row["Id"], image_index, image_name)
         if caption is None:
             prompt = build_caption_prompt(row, image_index) if sentence_aware else None
             raw_caption = captioner.caption(image_path, prompt=prompt, max_new_tokens=caption_max_new_tokens)

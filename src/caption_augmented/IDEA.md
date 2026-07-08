@@ -176,6 +176,20 @@ python -m src.caption_augmented.train \
   --max-steps 1
 ```
 
+Optional training smoke with shuffled image-order augmentation:
+
+```bash
+python -m src.caption_augmented.train \
+  --data-dir data \
+  --train-csv outputs/data_filtering/train_filtered_siglip_caption.csv \
+  --caption-cache outputs/caption_augmented/train_captions.jsonl \
+  --output-dir outputs/caption_augmented/train_shuffle_smoke \
+  --max-samples 16 \
+  --max-steps 1 \
+  --shuffle-augmentations-per-sample 2 \
+  --shuffle-keep-original
+```
+
 Dry run without loading Qwen:
 
 ```bash
