@@ -21,11 +21,12 @@ DEFAULT_LORA_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,dow
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the caption-augmented Qwen3.5/Qwen3-VL orderer.")
     parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--train-csv", default=None, help="Optional filtered train CSV; images are still read from data-dir/train")
     parser.add_argument("--caption-cache", default=None)
     parser.add_argument("--missing-caption-policy", choices=["empty", "fail"], default="empty")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--model-name", default=DEFAULT_ORDER_MODEL)
-    parser.add_argument("--max-samples", type=int, default=16)
+    parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=1)
     parser.add_argument("--num-train-epochs", type=float, default=1.0)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
@@ -253,6 +254,7 @@ def main() -> int:
         missing_caption_policy=args.missing_caption_policy,
         max_samples=args.max_samples,
         drop_no_ordering=args.drop_no_ordering,
+        train_csv_path=args.train_csv,
     )
     write_training_preview(records, output_dir, dry_run=args.dry_run)
     write_training_config(args, records)

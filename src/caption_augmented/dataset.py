@@ -35,8 +35,9 @@ def build_training_records(
     missing_caption_policy: str,
     max_samples: int | None,
     drop_no_ordering: bool,
+    train_csv_path: str | Path | None = None,
 ) -> list[OrderTrainingRecord]:
-    train_df = read_csv(data_dir / "train.csv")
+    train_df = read_csv(train_csv_path if train_csv_path is not None else data_dir / "train.csv")
     if drop_no_ordering:
         train_df = train_df[~train_df["No_ordering"].map(is_truthy)]
     if max_samples is not None:

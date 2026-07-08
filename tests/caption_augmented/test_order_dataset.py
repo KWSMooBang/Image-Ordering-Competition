@@ -72,3 +72,22 @@ def test_build_training_records_can_drop_no_ordering_rows(tmp_path):
             max_samples=None,
             drop_no_ordering=True,
         )
+
+
+def test_build_training_records_can_read_filtered_train_csv(tmp_path):
+    data_dir = tmp_path
+    pd.DataFrame([make_train_row(Id="unfiltered")]).to_csv(data_dir / "train.csv", index=False)
+    filtered_csv = tmp_path / "outputs" / "train_filtered.csv"
+    filtered_csv.parent.mkdir(parents=True)
+    pd.DataFrame([make_train_row(Id="filtered")]).to_csv(filtered_csv, index=False)
+
+    records = build_training_records(
+        data_dir,
+        caption_cache_path=None,
+        missing_caption_policy="empty",
+        max_samples=None,
+        drop_no_ordering=False,
+        train_csv_path=filtered_csv,
+    )
+
+    assert [record.row["Id"] for record in records] == ["filtered"]
