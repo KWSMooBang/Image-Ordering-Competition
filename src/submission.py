@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
 import pandas as pd
 
 PERMUTATION = [1, 2, 3, 4]
+LIST_LITERAL_PATTERN = re.compile(r"\[[^\[\]]+\]")
 
 
 def normalize_permutation(values: Iterable[int]) -> list[int]:
@@ -46,14 +48,11 @@ def submission_to_chronological(answer: Sequence[int]) -> list[int]:
 
 
 def parse_permutation_from_text(text: str, fallback: Sequence[int] | None = None) -> list[int]:
-    start_idx = text.find("[")
-    end_idx = text.rfind("]")
-
-    if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+    for match in LIST_LITERAL_PATTERN.finditer(text):
         try:
-            return parse_answer_cell(text[start_idx : end_idx + 1])
+            return parse_answer_cell(match.group(0))
         except (SyntaxError, ValueError):
-            pass
+            continue
 
     if fallback is not None:
         return normalize_permutation(fallback)

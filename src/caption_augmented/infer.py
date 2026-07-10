@@ -20,7 +20,13 @@ from src.caption_augmented.config import (
 from src.caption_augmented.model import QwenOrderer
 from src.caption_augmented.prompts import build_order_messages
 from src.data_utils import read_csv
-from src.submission import format_answer, normalize_permutation, parse_model_output, write_submission
+from src.submission import (
+    chronological_to_submission,
+    format_answer,
+    normalize_permutation,
+    parse_permutation_from_text,
+    write_submission,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -112,9 +118,13 @@ def main() -> int:
             output_text = orderer.generate_order(messages, max_new_tokens=args.order_max_new_tokens)
 
             try:
-                pred_list = parse_model_output(output_text, fallback=fallback)
+                chronological_order = parse_permutation_from_text(output_text)
+                pred_list = chronological_to_submission(chronological_order)
+                used_fallback = False
             except ValueError:
+                chronological_order = None
                 pred_list = fallback
+                used_fallback = True
 
             predictions.append({"Id": row["Id"], "Answer": format_answer(pred_list)})
             raw_file.write(
@@ -123,7 +133,9 @@ def main() -> int:
                         "Id": row["Id"],
                         "captions": captions,
                         "model_output": output_text,
+                        "parsed_chronological_order": chronological_order,
                         "parsed_submission_answer": pred_list,
+                        "used_fallback": used_fallback,
                     },
                     ensure_ascii=False,
                 )
