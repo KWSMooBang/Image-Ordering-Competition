@@ -88,6 +88,16 @@ def load_qwen_processor_and_model(model_name: str, model_kwargs: dict[str, Any])
     return processor, model
 
 
+def apply_peft_adapter(model: Any, adapter_path: str | Path | None) -> Any:
+    if adapter_path is None:
+        return model
+    try:
+        from peft import PeftModel
+    except ImportError as exc:
+        raise RuntimeError("Loading a LoRA adapter for inference requires `peft`.") from exc
+    return PeftModel.from_pretrained(model, str(adapter_path))
+
+
 class BlipCaptioner:
     def __init__(self, model_name: str, device: str = "auto", torch_dtype: str = "auto"):
         import torch
@@ -158,6 +168,7 @@ class QwenOrderer:
         device_map: str = "auto",
         torch_dtype: str = "auto",
         attn_implementation: str | None = None,
+        adapter_path: str | Path | None = None,
     ):
         import torch
 
@@ -168,6 +179,8 @@ class QwenOrderer:
             attn_implementation=attn_implementation,
         )
         self.processor, self.model = load_qwen_processor_and_model(model_name, model_kwargs)
+        self.model = apply_peft_adapter(self.model, adapter_path)
+        self.model.eval()
 
     def generate_order(self, messages: list[dict[str, object]], max_new_tokens: int) -> str:
         return _generate_qwen_text(self.processor, self.model, messages, max_new_tokens=max_new_tokens)

@@ -10,10 +10,7 @@ from tqdm.auto import tqdm
 
 from src.caption_augmented.captions import (
     build_captioner,
-    captions_for_row,
-    default_caption_cache_path,
-    generate_captions_for_row,
-    load_caption_cache,
+    generate_fresh_captions_for_row,
 )
 from src.caption_augmented.config import (
     DEFAULT_CAPTION_MODEL,
@@ -32,11 +29,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", default="data")
     parser.add_argument("--output", default=defaults.output)
     parser.add_argument("--raw-output", default=defaults.raw_output)
-    parser.add_argument("--caption-cache", default=defaults.caption_cache)
+    parser.add_argument("--caption-cache", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--fallback-answer", default="[1, 2, 3, 4]")
 
-    parser.add_argument("--caption-missing-policy", choices=["generate", "fail", "empty"], default="generate")
+    parser.add_argument(
+        "--caption-missing-policy",
+        choices=["generate", "fail", "empty"],
+        default="generate",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--caption-backend", choices=["blip", "qwen"], default="blip")
     parser.add_argument("--caption-model", default=DEFAULT_CAPTION_MODEL)
     parser.add_argument("--qwen-caption-model", default=DEFAULT_ORDER_MODEL)
@@ -45,9 +47,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caption-max-new-tokens", type=int, default=defaults.caption_max_new_tokens)
     parser.add_argument("--max-caption-chars", type=int, default=defaults.max_caption_chars)
     parser.add_argument("--sentence-aware-captions", action="store_true")
-    parser.add_argument("--refresh-captions", action="store_true")
+    parser.add_argument("--refresh-captions", action="store_true", help=argparse.SUPPRESS)
 
     parser.add_argument("--order-model", default=DEFAULT_ORDER_MODEL)
+    parser.add_argument("--order-adapter", default=None, help="Optional LoRA/PEFT adapter directory from training")
     parser.add_argument("--order-max-new-tokens", type=int, default=defaults.order_max_new_tokens)
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--qwen-torch-dtype", choices=["auto", "float16", "bfloat16", "float32"], default="auto")
@@ -55,22 +58,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_captions_for_row(row, image_dir: Path, args: argparse.Namespace, cache, caption_handle, captioner):
-    if args.caption_missing_policy == "generate" or args.refresh_captions:
-        if captioner is None:
-            raise RuntimeError("captioner is required when caption generation is enabled")
-        return generate_captions_for_row(
-            row=row,
-            image_dir=image_dir,
-            captioner=captioner,
-            cache=cache,
-            cache_handle=caption_handle,
-            refresh=args.refresh_captions,
-            caption_max_new_tokens=args.caption_max_new_tokens,
-            max_caption_chars=args.max_caption_chars,
-            sentence_aware=args.sentence_aware_captions,
-        )
-    return captions_for_row(row, cache, missing_policy=args.caption_missing_policy)
+def resolve_captions_for_row(row, image_dir: Path, args: argparse.Namespace, captioner):
+    return generate_fresh_captions_for_row(
+        row=row,
+        image_dir=image_dir,
+        captioner=captioner,
+        caption_max_new_tokens=args.caption_max_new_tokens,
+        max_caption_chars=args.max_caption_chars,
+        sentence_aware=args.sentence_aware_captions,
+    )
 
 
 def main() -> int:
@@ -84,14 +80,11 @@ def main() -> int:
 
     fallback = normalize_permutation(ast.literal_eval(args.fallback_answer))
     image_dir = data_dir / "test"
-    caption_cache_path = Path(args.caption_cache) if args.caption_cache else default_caption_cache_path("test")
-    caption_cache_path.parent.mkdir(parents=True, exist_ok=True)
-    caption_cache = load_caption_cache(caption_cache_path)
 
-    captioner = None
-    if args.caption_missing_policy == "generate" or args.refresh_captions:
-        print(f"Loading caption backend: {args.caption_backend}")
-        captioner = build_captioner(args)
+    if args.caption_cache:
+        print("Ignoring --caption-cache during inference; captions are generated fresh for every sample.")
+    print(f"Loading caption backend: {args.caption_backend}")
+    captioner = build_captioner(args)
 
     print(f"Loading ordering model: {args.order_model}")
     orderer = QwenOrderer(
@@ -99,23 +92,20 @@ def main() -> int:
         device_map=args.device_map,
         torch_dtype=args.qwen_torch_dtype,
         attn_implementation=args.attn_implementation,
+        adapter_path=args.order_adapter,
     )
 
     raw_path = Path(args.raw_output)
     raw_path.parent.mkdir(parents=True, exist_ok=True)
 
     predictions: list[dict[str, str]] = []
-    print(f"Running caption-augmented inference on {len(test_df)} samples")
-    with caption_cache_path.open("a", encoding="utf-8") as caption_handle, raw_path.open(
-        "w", encoding="utf-8"
-    ) as raw_file:
+    print(f"Running fresh-caption inference on {len(test_df)} samples")
+    with raw_path.open("w", encoding="utf-8") as raw_file:
         for _, row in tqdm(test_df.iterrows(), total=len(test_df)):
             captions = resolve_captions_for_row(
                 row=row,
                 image_dir=image_dir,
                 args=args,
-                cache=caption_cache,
-                caption_handle=caption_handle,
                 captioner=captioner,
             )
             messages = build_order_messages(row, image_dir=image_dir, captions=captions)
@@ -143,7 +133,6 @@ def main() -> int:
     write_submission(predictions, args.output, sample_df=sample_df)
     print(f"Saved submission to {args.output}")
     print(f"Saved raw outputs to {raw_path}")
-    print(f"Caption cache: {caption_cache_path}")
     return 0
 
 

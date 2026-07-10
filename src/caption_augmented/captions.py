@@ -142,6 +142,24 @@ def generate_captions_for_row(
     return captions
 
 
+def generate_fresh_captions_for_row(
+    row: pd.Series,
+    image_dir: Path,
+    captioner: Captioner,
+    *,
+    caption_max_new_tokens: int = CaptionAugmentedDefaults.caption_max_new_tokens,
+    max_caption_chars: int = CaptionAugmentedDefaults.max_caption_chars,
+    sentence_aware: bool = False,
+) -> list[str]:
+    captions: list[str] = []
+    image_paths = image_paths_for_row(row, image_dir)
+    for image_index, image_path in enumerate(image_paths, start=1):
+        prompt = build_caption_prompt(row, image_index) if sentence_aware else None
+        raw_caption = captioner.caption(image_path, prompt=prompt, max_new_tokens=caption_max_new_tokens)
+        captions.append(clean_caption(raw_caption, max_chars=max_caption_chars))
+    return captions
+
+
 def default_caption_cache_path(split: str) -> Path:
     return Path("outputs") / "caption_augmented" / f"{split}_captions.jsonl"
 

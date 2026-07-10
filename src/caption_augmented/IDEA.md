@@ -160,7 +160,6 @@ Inference smoke:
 ```bash
 python -m src.caption_augmented.infer \
   --data-dir data \
-  --caption-cache outputs/caption_augmented/test_captions.jsonl \
   --output outputs/caption_augmented/submission_smoke.csv \
   --max-samples 4
 ```
@@ -205,7 +204,8 @@ python -m src.caption_augmented.train \
 
 - Start with cached BLIP captions plus `Qwen/Qwen3.5-4B` ordering on RTX 3090-class GPUs.
 - Keep BLIP caption generation separate from Qwen ordering logic.
-- Always log raw captions and raw ordering model outputs.
+- Inference generates captions fresh for each test sample and logs raw captions plus raw ordering
+  model outputs.
 - If parsing fails, use an explicit fallback and record the raw output.
 - Keep all generated artifacts under `outputs/caption_augmented/` or
   `checkpoints/caption_augmented/`.
