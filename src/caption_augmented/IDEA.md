@@ -161,8 +161,15 @@ Inference smoke:
 python -m src.caption_augmented.infer \
   --data-dir data \
   --output outputs/caption_augmented/submission_smoke.csv \
-  --max-samples 4
+  --max-samples 4 \
+  --tta-permutations 4
 ```
+
+Permutation TTA generates captions once, reorders each image-caption pair for multiple ordering
+views, restores every valid prediction to the original image labels, and applies majority voting.
+The identity view is always included. The default four cyclic views place every original image in
+every input slot once. Use `--tta-permutations 1` to disable TTA or select up to all 24
+permutations; `--tta-seed` makes additional selected views deterministic.
 
 Optional training smoke:
 

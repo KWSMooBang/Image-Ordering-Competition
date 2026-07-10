@@ -7,4 +7,6 @@ CUDA_VISIBLE_DEVICES=0 python -m src.caption_augmented.infer \
   --output outputs/caption_augmented/filtered_shuffle_submission.csv \
   --raw-output outputs/caption_augmented/filtered_shuffle_raw_outputs.jsonl \
   --qwen-torch-dtype bfloat16 \
-  --attn-implementation sdpa
+  --attn-implementation sdpa \
+  --tta-permutations 4 \
+  --tta-seed 42
