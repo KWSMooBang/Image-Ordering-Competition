@@ -35,7 +35,7 @@ secrets*.json
 .idea/
 
 # Keep all local competition data out of source control
-data/
+/data/
 
 # Ignore only the root-level models directory.
 # src/models/ remains trackable.
