@@ -33,6 +33,7 @@ class PairwiseOrderingModel(nn.Module):
 
         self.backbone_name = backbone_name
         self.backbone = AutoModel.from_pretrained(backbone_name)
+        self.freeze_unused_backbone_parameters()
 
         image_dim = self._infer_projection_dim("vision")
         text_dim = self._infer_projection_dim("text")
@@ -84,6 +85,18 @@ class PairwiseOrderingModel(nn.Module):
             if isinstance(value, int) and value > 0:
                 return value
         raise ValueError(f"Could not infer {modality} feature dimension from {type(config).__name__}.")
+
+    def freeze_unused_backbone_parameters(self) -> None:
+        # SigLIP exposes contrastive logit calibration parameters that are only used
+        # when the full contrastive logits are computed. This pairwise classifier uses
+        # image/text feature encoders directly, so these parameters do not participate
+        # in the loss and must be excluded from DDP gradient reduction. Some
+        # Transformers versions prefix these names, so match by suffix as well.
+        self.frozen_unused_parameter_names: list[str] = []
+        for name, parameter in self.backbone.named_parameters():
+            if name in {"logit_scale", "logit_bias"} or name.endswith((".logit_scale", ".logit_bias")):
+                parameter.requires_grad = False
+                self.frozen_unused_parameter_names.append(f"backbone.{name}")
 
     def freeze_backbone(self) -> None:
         for parameter in self.backbone.parameters():

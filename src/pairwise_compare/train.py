@@ -316,11 +316,20 @@ def main() -> None:
         freeze_backbone=bool(model_config.get("freeze_backbone", False)),
     ).to(device)
 
+    if is_main_process():
+        frozen_unused = getattr(model, "frozen_unused_parameter_names", [])
+        if frozen_unused:
+            print(f"[train] frozen unused backbone params: {', '.join(frozen_unused)}")
+
     if is_distributed():
+        # Keep this enabled unconditionally for SigLIP variants. Some checkpoints
+        # expose auxiliary contrastive parameters that are irrelevant for the
+        # pairwise BCE loss, and older configs may not include the safety flag.
         model = DistributedDataParallel(
             model,
             device_ids=[device.index] if device.type == "cuda" else None,
             output_device=device.index if device.type == "cuda" else None,
+            find_unused_parameters=True,
         )
 
     criterion = nn.BCEWithLogitsLoss()

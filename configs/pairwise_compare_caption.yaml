@@ -33,6 +33,7 @@ training:
   swap_probability: 0.5
   gradient_clip_norm: 1.0
   use_amp: true
+  ddp_find_unused_parameters: true
   early_stopping_patience: 3
 
 inference:
