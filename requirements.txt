@@ -1,7 +1,9 @@
+numpy
 pandas
-pillow
+Pillow
+PyYAML
 tqdm
-pyyaml
+scikit-learn
 pytest
 torch
 torchvision

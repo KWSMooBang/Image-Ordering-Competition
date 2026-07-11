@@ -1,0 +1,39 @@
+experiment:
+  name: exp001_pairwise_siglip
+  output_dir: outputs/experiments
+
+seed: 42
+device: auto
+
+data:
+  train_pairs: data/interim/train_pairs.csv
+  val_pairs: data/interim/val_pairs.csv
+  train_image_root: data/raw/train
+  val_image_root: data/raw/train
+  test_csv: data/raw/test.csv
+  test_image_root: data/raw/test
+  sample_submission: data/raw/sample_submission.csv
+
+model:
+  backbone: google/siglip-base-patch16-224
+  freeze_backbone: false
+  projection_dim: 256
+  hidden_dim: 512
+  dropout: 0.2
+
+training:
+  epochs: 10
+  batch_size: 16
+  num_workers: 0
+  learning_rate: 0.00002
+  weight_decay: 0.01
+  swap_probability: 0.5
+  gradient_clip_norm: 1.0
+  use_amp: true
+  early_stopping_patience: 3
+
+inference:
+  batch_size: 32
+  num_workers: 0
+  threshold: 0.5
+  reconstruction: permutation_search

@@ -1,18 +1,42 @@
+```gitignore
 .DS_Store
+
+# Python virtual environment and cache
 .venv/
+venv/
+env/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 
+# Generated outputs
 outputs/
 experiments/
 checkpoints/
 work/
 
+# Logs and temporary files
 *.log
 *.tmp
 *.jsonl
 
-# Keep the local competition data out of source control by default.
+# Secrets and local environment variables
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+credentials*.json
+secrets*.json
+
+# IDE settings
+.vscode/
+.idea/
+
+# Keep all local competition data out of source control
 data/
-models/
+
+# Ignore only the root-level models directory.
+# src/models/ remains trackable.
+/models/
