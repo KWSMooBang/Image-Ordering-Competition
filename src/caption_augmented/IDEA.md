@@ -160,10 +160,16 @@ Inference smoke:
 ```bash
 python -m src.caption_augmented.infer \
   --data-dir data \
-  --caption-cache outputs/caption_augmented/test_captions.jsonl \
   --output outputs/caption_augmented/submission_smoke.csv \
-  --max-samples 4
+  --max-samples 4 \
+  --tta-permutations 4
 ```
+
+Permutation TTA generates captions once, reorders each image-caption pair for multiple ordering
+views, restores every valid prediction to the original image labels, and applies majority voting.
+The identity view is always included. The default four cyclic views place every original image in
+every input slot once. Use `--tta-permutations 1` to disable TTA or select up to all 24
+permutations; `--tta-seed` makes additional selected views deterministic.
 
 Optional training smoke:
 
@@ -174,6 +180,20 @@ python -m src.caption_augmented.train \
   --output-dir outputs/caption_augmented/train_smoke \
   --max-samples 16 \
   --max-steps 1
+```
+
+Optional training smoke with shuffled image-order augmentation:
+
+```bash
+python -m src.caption_augmented.train \
+  --data-dir data \
+  --train-csv outputs/data_filtering/train_filtered_siglip_caption.csv \
+  --caption-cache outputs/caption_augmented/train_captions.jsonl \
+  --output-dir outputs/caption_augmented/train_shuffle_smoke \
+  --max-samples 16 \
+  --max-steps 1 \
+  --shuffle-augmentations-per-sample 2 \
+  --shuffle-keep-original
 ```
 
 Dry run without loading Qwen:
@@ -191,7 +211,8 @@ python -m src.caption_augmented.train \
 
 - Start with cached BLIP captions plus `Qwen/Qwen3.5-4B` ordering on RTX 3090-class GPUs.
 - Keep BLIP caption generation separate from Qwen ordering logic.
-- Always log raw captions and raw ordering model outputs.
+- Inference generates captions fresh for each test sample and logs raw captions plus raw ordering
+  model outputs.
 - If parsing fails, use an explicit fallback and record the raw output.
 - Keep all generated artifacts under `outputs/caption_augmented/` or
   `checkpoints/caption_augmented/`.

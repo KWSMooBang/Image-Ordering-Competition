@@ -10,6 +10,8 @@ from src.caption_augmented.captions import (
     clean_caption,
     default_caption_cache_path,
     generate_captions_for_row,
+    generate_fresh_captions_for_row,
+    get_cached_caption,
     load_caption_cache,
 )
 
@@ -58,6 +60,16 @@ def test_captions_for_row_can_fail_or_fill_empty_for_missing_values():
     assert captions_for_row(row, {}, missing_policy="empty") == ["", "", "", ""]
 
 
+def test_captions_for_row_falls_back_to_id_and_image_name_after_slot_shuffle():
+    row = make_row()
+    shuffled = row.copy()
+    shuffled["Input_1"] = "c.jpg"
+    cache = {("sample-1", 3, "c.jpg"): "caption for c"}
+
+    assert get_cached_caption(cache, "sample-1", 1, "c.jpg") == "caption for c"
+    assert captions_for_row(shuffled, cache, missing_policy="empty")[0] == "caption for c"
+
+
 def test_generate_captions_for_row_uses_cache_and_appends_missing_records(tmp_path):
     row = make_row()
     cache = {("sample-1", 1, "a.jpg"): "cached first"}
@@ -84,6 +96,28 @@ def test_generate_captions_for_row_uses_cache_and_appends_missing_records(tmp_pa
     assert len(captioner.calls) == 3
     assert all(call[1] is not None for call in captioner.calls)
     assert load_caption_cache(path)[("sample-1", 4, "d.jpg")] == "caption for d.jpg"
+
+
+def test_generate_fresh_captions_for_row_never_uses_cache(tmp_path):
+    row = make_row()
+    captioner = FakeCaptioner()
+
+    captions = generate_fresh_captions_for_row(
+        row=row,
+        image_dir=Path("/data/test"),
+        captioner=captioner,
+        caption_max_new_tokens=12,
+        sentence_aware=True,
+    )
+
+    assert captions == [
+        "caption for a.jpg",
+        "caption for b.jpg",
+        "caption for c.jpg",
+        "caption for d.jpg",
+    ]
+    assert len(captioner.calls) == 4
+    assert all(call[1] is not None for call in captioner.calls)
 
 
 def test_default_caption_cache_path_is_namespaced_by_idea():

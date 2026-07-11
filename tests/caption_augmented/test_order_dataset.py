@@ -8,6 +8,7 @@ from src.caption_augmented.dataset import (
     is_truthy,
     target_text_from_answer,
 )
+from src.submission import parse_answer_cell
 
 
 def make_train_row(**overrides):
@@ -72,3 +73,77 @@ def test_build_training_records_can_drop_no_ordering_rows(tmp_path):
             max_samples=None,
             drop_no_ordering=True,
         )
+
+
+def test_build_training_records_can_read_filtered_train_csv(tmp_path):
+    data_dir = tmp_path
+    pd.DataFrame([make_train_row(Id="unfiltered")]).to_csv(data_dir / "train.csv", index=False)
+    filtered_csv = tmp_path / "outputs" / "train_filtered.csv"
+    filtered_csv.parent.mkdir(parents=True)
+    pd.DataFrame([make_train_row(Id="filtered")]).to_csv(filtered_csv, index=False)
+
+    records = build_training_records(
+        data_dir,
+        caption_cache_path=None,
+        missing_caption_policy="empty",
+        max_samples=None,
+        drop_no_ordering=False,
+        train_csv_path=filtered_csv,
+    )
+
+    assert [record.row["Id"] for record in records] == ["filtered"]
+
+
+def test_build_training_records_can_shuffle_image_order_and_recompute_target(tmp_path):
+    data_dir = tmp_path
+    row = make_train_row(Answer="[3, 1, 4, 2]")
+    pd.DataFrame([row]).to_csv(data_dir / "train.csv", index=False)
+    cache_path = tmp_path / "captions.jsonl"
+    with cache_path.open("w", encoding="utf-8") as handle:
+        append_caption_record(handle, CaptionRecord("sample-1", 1, "a.jpg", "caption a"))
+        append_caption_record(handle, CaptionRecord("sample-1", 2, "b.jpg", "caption b"))
+        append_caption_record(handle, CaptionRecord("sample-1", 3, "c.jpg", "caption c"))
+        append_caption_record(handle, CaptionRecord("sample-1", 4, "d.jpg", "caption d"))
+
+    records = build_training_records(
+        data_dir,
+        caption_cache_path=cache_path,
+        missing_caption_policy="fail",
+        max_samples=None,
+        drop_no_ordering=False,
+        shuffle_augmentations_per_sample=1,
+        shuffle_seed=3,
+    )
+
+    assert len(records) == 1
+    shuffled_inputs = [records[0].row[f"Input_{index}"] for index in range(1, 5)]
+    assert shuffled_inputs != ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+    assert records[0].captions == [
+        {
+            "a.jpg": "caption a",
+            "b.jpg": "caption b",
+            "c.jpg": "caption c",
+            "d.jpg": "caption d",
+        }[image]
+        for image in shuffled_inputs
+    ]
+    assert sorted(parse_answer_cell(records[0].target_text)) == [1, 2, 3, 4]
+
+
+def test_build_training_records_can_keep_original_plus_shuffled_views(tmp_path):
+    data_dir = tmp_path
+    pd.DataFrame([make_train_row()]).to_csv(data_dir / "train.csv", index=False)
+
+    records = build_training_records(
+        data_dir,
+        caption_cache_path=None,
+        missing_caption_policy="empty",
+        max_samples=None,
+        drop_no_ordering=False,
+        shuffle_augmentations_per_sample=2,
+        shuffle_seed=3,
+        shuffle_keep_original=True,
+    )
+
+    assert len(records) == 3
+    assert [records[0].row[f"Input_{index}"] for index in range(1, 5)] == ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
