@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import random
@@ -11,9 +12,17 @@ from typing import Any
 import pandas as pd
 
 from src.caption_augmented.config import DEFAULT_ORDER_MODEL
-from src.caption_augmented.dataset import OrderTrainingDataset, OrderTrainingRecord, build_training_records
-from src.caption_augmented.model import load_qwen_processor_and_model
+from src.caption_augmented.dataset import (
+    OrderTrainingDataset,
+    OrderTrainingRecord,
+    build_records_from_dataframe,
+    build_validation_records,
+    load_filtered_train_dataframe,
+    split_train_val_dataframe,
+)
+from src.caption_augmented.model import load_qwen_processor_and_model, _generate_qwen_text
 from src.caption_augmented.prompts import build_order_messages
+from src.submission import normalize_permutation, parse_permutation_from_text
 
 DEFAULT_OUTPUT_DIR = "outputs/caption_augmented/orderer_train_smoke"
 DEFAULT_LORA_TARGET_MODULES = "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"
@@ -66,6 +75,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shuffle-keep-original", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Build records and write config without loading a model")
     parser.add_argument("--resume-from-checkpoint", default=None)
+    parser.add_argument(
+        "--val-fraction",
+        type=float,
+        default=0.0,
+        help="Fraction of rows (0 < f < 1) held out as validation, split before any shuffle "
+        "augmentation. 0 (default) disables validation entirely, matching prior behavior.",
+    )
+    parser.add_argument("--val-seed", type=int, default=42, help="Seed for the deterministic train/val split.")
+    parser.add_argument(
+        "--val-max-samples",
+        type=int,
+        default=None,
+        help="Cap the number of validation rows actually evaluated each epoch (cheap dry runs).",
+    )
+    parser.add_argument(
+        "--eval-max-new-tokens",
+        type=int,
+        default=128,
+        help="Max new tokens when generating validation predictions.",
+    )
     return parser.parse_args()
 
 
@@ -276,6 +305,130 @@ def build_training_arguments(args: argparse.Namespace, torch: Any):
     )
 
 
+def parse_ground_truth_order(target_text: str) -> list[int]:
+    return normalize_permutation(ast.literal_eval(target_text))
+
+
+def evaluate_validation_records(
+    model: Any,
+    processor: Any,
+    val_records: list[OrderTrainingRecord],
+    image_dir: Path,
+    *,
+    max_new_tokens: int,
+) -> dict[str, Any]:
+    """Generate a whole-order prediction for each validation record and score
+    exact-match accuracy against its ground-truth chronological order. Mirrors
+    the whole-mode inference path (`build_order_messages` + greedy generation),
+    so these numbers are a fair local preview of `caption_augmented.infer`
+    (whole mode) performance without needing a Kaggle submission.
+    """
+    was_training = model.training
+    model.eval()
+    correct = 0
+    per_sample: list[dict[str, Any]] = []
+    try:
+        for record in val_records:
+            row = pd.Series(record.row)
+            messages = build_order_messages(row, image_dir=image_dir, captions=record.captions)
+            output_text = _generate_qwen_text(processor, model, messages, max_new_tokens=max_new_tokens)
+            ground_truth = parse_ground_truth_order(record.target_text)
+            try:
+                predicted = normalize_permutation(parse_permutation_from_text(output_text))
+                is_correct = predicted == ground_truth
+            except ValueError:
+                predicted = None
+                is_correct = False
+            if is_correct:
+                correct += 1
+            per_sample.append(
+                {
+                    "Id": record.row.get("Id"),
+                    "ground_truth": ground_truth,
+                    "model_output": output_text,
+                    "predicted": predicted,
+                    "correct": is_correct,
+                }
+            )
+    finally:
+        if was_training:
+            model.train()
+
+    total = len(val_records)
+    return {
+        "exact_match_accuracy": (correct / total) if total else 0.0,
+        "correct": correct,
+        "total": total,
+        "per_sample": per_sample,
+    }
+
+
+def build_validation_callback(
+    processor: Any,
+    val_records: list[OrderTrainingRecord],
+    image_dir: Path,
+    output_dir: Path,
+    max_new_tokens: int,
+):
+    """Build a TrainerCallback that runs generation-based exact-match
+    validation at the end of every epoch and checkpoints the best-scoring
+    model/adapter to `output_dir/best`, separately from Trainer's own
+    step-based checkpoints. `transformers` is imported lazily here (not at
+    module level) so this module stays importable without torch/transformers
+    installed, matching the rest of this file's lazy-import convention.
+    """
+    from transformers import TrainerCallback
+
+    class ValidationCallback(TrainerCallback):
+        def __init__(self) -> None:
+            self.history: list[dict[str, Any]] = []
+            self.best_exact_match: float = -1.0
+
+        def on_epoch_end(self, args, state, control, **kwargs):
+            if not is_main_process():
+                return control
+
+            model = kwargs["model"]
+            result = evaluate_validation_records(
+                model, processor, val_records, image_dir, max_new_tokens=max_new_tokens
+            )
+            entry = {
+                "epoch": state.epoch,
+                "step": state.global_step,
+                "exact_match_accuracy": result["exact_match_accuracy"],
+                "correct": result["correct"],
+                "total": result["total"],
+            }
+            self.history.append(entry)
+            print(
+                f"[validation] epoch={entry['epoch']:.2f} step={entry['step']} "
+                f"exact_match={result['exact_match_accuracy']:.4f} "
+                f"({result['correct']}/{result['total']})"
+            )
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "validation_history.json").write_text(
+                json.dumps(self.history, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+
+            if result["exact_match_accuracy"] > self.best_exact_match:
+                self.best_exact_match = result["exact_match_accuracy"]
+                best_dir = output_dir / "best"
+                best_dir.mkdir(parents=True, exist_ok=True)
+                model.save_pretrained(str(best_dir))
+                processor.save_pretrained(str(best_dir))
+                (output_dir / "best_metrics.json").write_text(
+                    json.dumps(entry, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                (best_dir / "val_predictions.json").write_text(
+                    json.dumps(result["per_sample"], indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                print(f"[validation] new best exact_match={self.best_exact_match:.4f} -> saved to {best_dir}")
+            return control
+
+    return ValidationCallback()
+
+
 def main() -> int:
     args = parse_args()
     if args.per_device_train_batch_size != 1:
@@ -284,13 +437,27 @@ def main() -> int:
     set_seed(args.seed)
     data_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
-    records = build_training_records(
-        data_dir=data_dir,
-        caption_cache_path=args.caption_cache,
-        missing_caption_policy=args.missing_caption_policy,
-        max_samples=args.max_samples,
+
+    train_df = load_filtered_train_dataframe(
+        data_dir,
+        args.train_csv,
         drop_no_ordering=args.drop_no_ordering,
-        train_csv_path=args.train_csv,
+        max_samples=args.max_samples,
+    )
+
+    val_records: list[OrderTrainingRecord] = []
+    if args.val_fraction > 0:
+        train_df, val_df = split_train_val_dataframe(train_df, args.val_fraction, seed=args.val_seed)
+        if args.val_max_samples is not None:
+            val_df = val_df.head(args.val_max_samples).copy()
+        val_records = build_validation_records(
+            val_df, args.caption_cache, missing_caption_policy=args.missing_caption_policy
+        )
+
+    records = build_records_from_dataframe(
+        train_df,
+        args.caption_cache,
+        missing_caption_policy=args.missing_caption_policy,
         shuffle_augmentations_per_sample=args.shuffle_augmentations_per_sample,
         shuffle_seed=args.shuffle_seed,
         shuffle_include_identity=args.shuffle_include_identity,
@@ -299,6 +466,12 @@ def main() -> int:
     )
     write_training_preview(records, output_dir, dry_run=args.dry_run)
     write_training_config(args, records)
+    if val_records and is_main_process():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "validation_set.json").write_text(
+            json.dumps([{"Id": record.row.get("Id")} for record in val_records], indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     if args.dry_run:
         return 0
 
@@ -309,11 +482,24 @@ def main() -> int:
 
     from transformers import Trainer
 
+    callbacks = []
+    if val_records:
+        callbacks.append(
+            build_validation_callback(
+                processor=processor,
+                val_records=val_records,
+                image_dir=data_dir / "train",
+                output_dir=output_dir,
+                max_new_tokens=args.eval_max_new_tokens,
+            )
+        )
+
     trainer = Trainer(
         model=model,
         args=build_training_arguments(args, torch),
         train_dataset=OrderTrainingDataset(records),
         data_collator=OrdererSFTCollator(processor=processor, image_dir=data_dir / "train"),
+        callbacks=callbacks,
     )
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     trainer.save_model(args.output_dir)
@@ -322,6 +508,7 @@ def main() -> int:
     summary = {
         "status": "ok",
         "records": len(records),
+        "val_records": len(val_records),
         "model_name": args.model_name,
         "output_dir": args.output_dir,
         "use_lora": args.use_lora,

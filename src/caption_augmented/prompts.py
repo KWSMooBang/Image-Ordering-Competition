@@ -25,7 +25,7 @@ def build_order_messages(row: pd.Series, image_dir: Path, captions: list[str]) -
     content: list[dict[str, str]] = []
     for image_index, column in enumerate(INPUT_COLUMNS, start=1):
         image_path = image_dir / str(row["Id"]) / str(row[column])
-        content.append({"type": "image", "image": str(image_path)})
+        content.append({"type": "image", "image": image_path.as_posix()})
         content.append({"type": "text", "text": f"\nImage {image_index} caption: {captions[image_index - 1]}\n"})
 
     content.append(
